@@ -49,6 +49,13 @@ class VisionEngine:
             import torch
             from transformers import CLIPModel, CLIPProcessor
 
+            # Use all available CPU cores for inference (big win on CPU Spaces).
+            try:
+                import os
+                torch.set_num_threads(max(1, os.cpu_count() or 1))
+            except Exception:
+                pass
+
             if settings.device == "auto":
                 self._device = "cuda" if torch.cuda.is_available() else "cpu"
             else:
@@ -95,6 +102,27 @@ class VisionEngine:
         feats = feats / feats.norm(p=2, dim=-1, keepdim=True)
         return feats.cpu().numpy().astype("float32")[0]
 
+    def classify(
+        self,
+        img_vec: "np.ndarray",
+        labels: list[str],
+        template: str = "a photo of {}",
+        top_k: Optional[int] = None,
+    ) -> list[tuple[str, float]]:
+        """Rank labels for an *already-encoded* image vector (no image encode).
+
+        Encoding the image is by far the most expensive step on CPU, so callers
+        should embed once and reuse the vector across all label groups.
+        """
+        self.load()
+        txt = self._encode_text(tuple(labels), template)  # (N, D), cached
+        logits = (txt @ img_vec) * self._logit_scale  # (N,)
+        logits = logits - logits.max()
+        probs = np.exp(logits)
+        probs = probs / probs.sum()
+        ranked = sorted(zip(labels, probs.tolist()), key=lambda x: x[1], reverse=True)
+        return ranked[:top_k] if top_k else ranked
+
     def zero_shot(
         self,
         image: Image.Image,
@@ -102,16 +130,9 @@ class VisionEngine:
         template: str = "a photo of {}",
         top_k: Optional[int] = None,
     ) -> list[tuple[str, float]]:
-        """Return labels ranked by softmax probability (sums to 1 over `labels`)."""
-        self.load()
-        img_vec = self.embed_image(image)  # (D,)
-        txt = self._encode_text(tuple(labels), template)  # (N, D)
-        logits = (txt @ img_vec) * self._logit_scale  # (N,)
-        logits = logits - logits.max()
-        probs = np.exp(logits)
-        probs = probs / probs.sum()
-        ranked = sorted(zip(labels, probs.tolist()), key=lambda x: x[1], reverse=True)
-        return ranked[:top_k] if top_k else ranked
+        """Convenience: encode `image` then classify. Prefer classify() when the
+        same image is scored against several label groups."""
+        return self.classify(self.embed_image(image), labels, template, top_k)
 
 
 _engine: Optional[VisionEngine] = None

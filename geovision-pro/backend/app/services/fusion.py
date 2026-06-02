@@ -72,8 +72,18 @@ def _short_label(addr: dict, display: str) -> str:
     return ", ".join(parts) if parts else (display or "")
 
 
-def _analyze_signals(image: Image.Image) -> tuple[list[SignalGroup], dict]:
-    """Run each visual-analysis group; weight = top score, normalized across groups."""
+def _downscale(img: Image.Image, max_side: int = 1024) -> Image.Image:
+    """Shrink huge phone photos so encoding/IO is fast (CLIP resizes to 224 anyway)."""
+    w, h = img.size
+    m = max(w, h)
+    if m > max_side:
+        s = max_side / m
+        img = img.resize((max(1, int(w * s)), max(1, int(h * s))), Image.LANCZOS)
+    return img
+
+
+def _analyze_signals(img_vec) -> tuple[list[SignalGroup], dict]:
+    """Score each visual-analysis group from an already-encoded image vector."""
     engine = get_engine()
     groups: list[SignalGroup] = []
     tops: dict[str, tuple[str, float]] = {}
@@ -81,8 +91,8 @@ def _analyze_signals(image: Image.Image) -> tuple[list[SignalGroup], dict]:
     for group_name, mapping in SIGNAL_GROUPS.items():
         labels = list(mapping.keys())
         prompts = list(mapping.values())
-        # zero_shot uses a template; here prompts are full sentences already
-        ranked = engine.zero_shot(image, prompts, template="{}", top_k=3)
+        # prompts are full sentences already -> template "{}"; reuse encoded image
+        ranked = engine.classify(img_vec, prompts, template="{}", top_k=3)
         prompt_to_label = {v: k for k, v in mapping.items()}
         top = [SignalScore(label=prompt_to_label.get(p, p), score=round(s, 4)) for p, s in ranked]
         groups.append(SignalGroup(name=group_name, top=top, weight=0.0))
@@ -110,23 +120,23 @@ def _reasoning_from_signals(tops: dict, country: str) -> str:
 
 
 async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
-    image = open_image(data)
+    image = _downscale(open_image(data))
     engine = get_engine()
     geo = get_geo_engine()
 
     # --- visual signals + coordinate prediction (CPU/GPU bound -> thread) ---
     def _vision():
-        groups, tops = _analyze_signals(image)
-        countries = engine.zero_shot(image, COUNTRY_NAMES, template=COUNTRY_PROMPT, top_k=10)
+        img_vec = engine.embed_image(image)              # encode ONCE, reuse below
+        groups, tops = _analyze_signals(img_vec)
+        countries = engine.classify(img_vec, COUNTRY_NAMES, template=COUNTRY_PROMPT, top_k=10)
         region = None
         if countries:
             regs = REGIONS.get(countries[0][0])
             if regs:
-                ranked = engine.zero_shot(image, regs, template=REGION_PROMPT, top_k=1)
+                ranked = engine.classify(img_vec, regs, template=REGION_PROMPT, top_k=1)
                 if ranked:
                     # strip the appended ", Country" for display
                     region = ranked[0][0].split(",")[0]
-        img_vec = engine.embed_image(image)
         geo_preds = geo.predict(image)  # [(lat, lon, prob), ...] or [] if unavailable
         return groups, tops, countries, region, img_vec, geo_preds
 
@@ -213,7 +223,7 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
         location_source = "geoclip"
         clustered = _cluster_coords(geo_preds, get_settings().geoclip_cluster_km)[:10]
         revs = []
-        for lat, lon, _ in clustered[:5]:           # reverse-geocode only the best few
+        for lat, lon, _ in clustered[:2]:   # reverse-geocode only top-2 (Nominatim = 1 req/s)
             rev = await geocode.reverse(lat, lon)
             revs.append(rev or {})
         while len(revs) < len(clustered):
@@ -239,7 +249,7 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
             candidates.append(LocationCandidate(
                 rank=i, label=label, confidence=round(p / total, 3),
                 lat=lat, lon=lon,
-                reasoning="GeoCLIP-Koordinatenvorhersage (TTA + Clustering). "
+                reasoning="GeoCLIP-Koordinatenvorhersage (Clustering der Top-Treffer). "
                           + _reasoning_from_signals(tops, hierarchy.country or "dem Land"),
             ))
         spread = (_haversine_km((clustered[0][0], clustered[0][1]),
@@ -339,7 +349,7 @@ async def analyze_video(data: bytes, source_name: str = "") -> AnalysisResult:
         candidates = []
         for i, (lat, lon, p) in enumerate(ordered, start=1):
             label = f"{lat:.4f}, {lon:.4f}"
-            if i <= 5:  # limit reverse-geocoding network calls
+            if i <= 2:  # limit reverse-geocoding network calls (1 req/s)
                 r = await geocode.reverse(lat, lon)
                 label = _short_label((r or {}).get("address", {}),
                                      (r or {}).get("display", "")) or label
