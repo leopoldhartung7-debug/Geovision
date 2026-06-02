@@ -55,7 +55,12 @@ export default function App() {
     <div className="min-h-full">
       <header className="border-b border-edge bg-panel/60 backdrop-blur sticky top-0 z-[1000]">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="font-extrabold text-xl">Geo<span className="text-accent">Vision</span> Pro</div>
+          <div className="font-extrabold text-xl flex items-baseline gap-2">
+            Geo<span className="text-accent">Vision</span> Pro
+            <span className="text-[10px] font-semibold text-accent border border-accent/40 rounded px-1.5 py-0.5">
+              v1.1 · schnell
+            </span>
+          </div>
           <div className="text-xs text-muted hidden sm:block">
             Land/Region zuverlässig · Stadt nur bei GPS/Schild · transparente Unsicherheit
           </div>
