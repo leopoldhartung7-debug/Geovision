@@ -10,10 +10,17 @@ Visuelle Standortschätzung aus Fotos — eine einzelne HTML-Datei, die direkt a
 
 | Stufe | Funktion | Verlässlichkeit |
 |-------|----------|-----------------|
-| 1 | **GPS aus EXIF** auslesen | ✅ Exakt, wenn vorhanden. Viele Bilder (Screenshots, Messenger, Social Media) haben GPS aber entfernt. |
-| 2 | **Bildmerkmale aus Pixeln** (Vegetation, Bebauung, Licht, Himmelsfarbe, Schnee, warme Töne) | ✅ Echte Messungen aus den Pixeln. |
-| 3 | **Regionstyp-Schätzung ohne GPS** (regelbasiert, Top-5) | ⚠️ Grobe Tendenz, **kein** Stadt-/Land-Treffer. Konfidenz hart auf 35 % gedeckelt. |
-| 4 | **Optionaler KI-Server** (StreetCLIP) | 🔌 Vorbereitet, aber Backend ist **noch nicht enthalten** (siehe unten). |
+| 1 | **GPS aus EXIF** auslesen → Adresse + **Hotels/Gebäude in der Nähe** (OpenStreetMap/Overpass) | ✅ Exakt, wenn GPS vorhanden. Der einzige Weg zu punktgenauem Haus/Hotel. Viele Bilder (Screenshots, Messenger) haben GPS aber entfernt. |
+| 2 | **Bildmerkmale aus Pixeln** mit räumlicher Analyse (Wasser, Sand, Himmel, Vegetation, Bebauung, Schnee …) | ✅ Echte Messungen aus den Pixeln. |
+| 3a | **Regionstyp-Heuristik** (regelbasiert, Top-5) | ⚠️ Grobe Tendenz. Konfidenz hart gedeckelt. |
+| 3b | **On-Device-KI** (CLIP via transformers.js) — Szene/Biom | ✅ Echtes neuronales Netz, läuft lokal im Browser. Erkennt Strand/Stadt/Berge/Wald zuverlässig. **Kein** konkretes Land/Stadt. |
+| 4 | **Optionaler KI-Server** (StreetCLIP) für Land/Stadt | 🔌 Vorbereitet, Backend noch nicht enthalten. |
+
+### Genaue Identifikation (Hotel / Haus / Ort)
+- **OCR** (Tesseract.js, on-device): liest sichtbare Schrift (Hotel-/Geschäftsnamen, Schilder) → direkt googeln / in Maps suchen.
+- **Bildsuche / Google Lens**: teilt das Foto per Web-Share-API direkt an Google Lens & Co. — der stärkste reale Weg, ein konkretes Gebäude ohne GPS zu finden.
+
+> **Ehrliche Grenze:** Das exakte Hotel/Haus **allein aus den Pixeln** zu erraten, ist technisch nicht möglich — von keiner Software. Die App nutzt deshalb die realen Wege: GPS-Adresse, sichtbarer Text und Bildsuche.
 
 **Grenzen (bewusst eingehalten):** Keine Personenidentifikation. Kennzeichen nur als Format/Farbe, keine OCR konkreter Nummern.
 

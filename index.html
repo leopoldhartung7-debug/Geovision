@@ -225,6 +225,32 @@
     <div id="reasonBody" class="reasoning"><p class="small">Welche Merkmale zu welcher Einschätzung führen, erscheint hier nach der Analyse.</p></div>
   </section>
 
+  <!-- ======================= GENAUE IDENTIFIKATION ======================= -->
+  <section class="card" id="cardIdentify">
+    <h2>🔎 Genaue Identifikation (Hotel / Haus / Ort)</h2>
+    <div class="notice">
+      Ehrlich: Den <b>exakten</b> Ort/Hotel/Haus allein aus den Pixeln zu erraten, ist technisch nicht möglich.
+      Diese Werkzeuge nutzen die <b>realen</b> Wege dorthin: GPS-Adresse (oben), sichtbarer Text und Bildsuche.
+    </div>
+
+    <div style="margin-top:14px">
+      <div style="font-weight:800; font-size:14px">📝 Text im Bild lesen (OCR)</div>
+      <p class="small">Liest sichtbare Schrift: Hotel-/Geschäftsnamen, Straßen-/Ortsschilder → direkt durchsuchbar. Keine Kfz-Kennzeichen, keine Personen.</p>
+      <div class="btn-row" style="margin-top:8px"><button class="btn secondary" id="btnOcr" disabled>Text erkennen</button></div>
+      <div class="status" id="ocrStatus"></div>
+      <div id="ocrResult"></div>
+    </div>
+
+    <div style="border-top:1px solid var(--border); margin:16px 0 12px"></div>
+
+    <div>
+      <div style="font-weight:800; font-size:14px">🖼️ Bildsuche / Google Lens</div>
+      <p class="small">Der stärkste Weg, ein konkretes Gebäude/Hotel ohne GPS zu finden: das Foto an eine Bild-Suchmaschine geben.</p>
+      <div class="btn-row" style="margin-top:8px"><button class="btn" id="btnShare" disabled>📲 Bild teilen / mit Lens suchen</button></div>
+      <div id="lensLinks" class="small" style="margin-top:8px"></div>
+    </div>
+  </section>
+
   <!-- ======================= KARTE ======================= -->
   <section class="card">
     <h2>Karte</h2>
@@ -308,6 +334,21 @@ function setStatus(el, msg, cls) {
 function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
 function pct(x) { return Math.round(x * 100); }
 function rgbToCss(r, g, b) { return `rgb(${r|0},${g|0},${b|0})`; }
+function htmlEsc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function haversine(la1, lo1, la2, lo2) {
+  const R = 6371000, t = Math.PI / 180;
+  const dLa = (la2 - la1) * t, dLo = (lo2 - lo1) * t;
+  const a = Math.sin(dLa/2)**2 + Math.cos(la1*t)*Math.cos(la2*t)*Math.sin(dLo/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = res;
+    s.onerror = () => rej(new Error("Script-Laden fehlgeschlagen"));
+    document.head.appendChild(s);
+  });
+}
 
 /* ---------------------------- Datei-Eingabe ---------------------------- */
 $("btnCamera").addEventListener("click", () => $("fileCamera").click());
@@ -354,15 +395,21 @@ async function handleFile(file) {
 
     // KI-Button freischalten, falls URL gesetzt
     $("btnAi").disabled = !($("aiUrl").value.trim());
-    // On-Device-KI immer verfügbar, sobald ein Bild da ist
+    // On-Device-KI + Identifikations-Werkzeuge verfügbar, sobald ein Bild da ist
     $("btnClip").disabled = false;
+    $("btnOcr").disabled = false;
+    $("btnShare").disabled = false;
     $("clipResult").innerHTML = "";
+    $("ocrResult").innerHTML = "";
+    $("lensLinks").innerHTML = "";
     setStatus($("clipStatus"), "");
+    setStatus($("ocrStatus"), "");
 
     // Karte + Geocoding nur bei echtem GPS
     if (gps.hasGps) {
       showOnMap(gps.lat, gps.lon, "EXIF-GPS");
-      reverseGeocode(gps.lat, gps.lon); // füllt Ortsnamen asynchron nach
+      reverseGeocode(gps.lat, gps.lon);     // füllt Adresse asynchron nach
+      fetchNearbyPlaces(gps.lat, gps.lon);  // benennt Hotels/Gebäude in der Nähe
     } else {
       hideMap();
     }
@@ -440,7 +487,8 @@ function renderGps(gps) {
     <div class="kv" style="margin-top:12px" id="gpsKv">
       ${rows.map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join("")}
     </div>
-    <div class="kv" style="margin-top:8px"><div class="k">Ort</div><div class="v" id="gpsPlace">wird geladen …</div></div>`;
+    <div class="kv" style="margin-top:8px"><div class="k">Adresse</div><div class="v" id="gpsPlace">wird geladen …</div></div>
+    <div id="nearbyBox" class="small" style="margin-top:12px">Orte in der Nähe (Hotels, Gebäude) werden gesucht …</div>`;
 }
 
 /* ============================================================
@@ -466,6 +514,51 @@ async function reverseGeocode(lat, lon) {
     updateLatestHistoryPlace(name);
   } catch (e) {
     if (placeEl) placeEl.textContent = "Ortsname nicht abrufbar (offline?)";
+  }
+}
+
+/* ============================================================
+   Orte in der Nähe (Overpass / OpenStreetMap) — benennt Hotels,
+   Gebäude, Geschäfte an den GPS-Koordinaten. Nur bei echtem GPS.
+   ============================================================ */
+async function fetchNearbyPlaces(lat, lon) {
+  const box = $("nearbyBox");
+  if (!box) return;
+  try {
+    const q = `[out:json][timeout:20];(nwr(around:150,${lat},${lon})[name];);out center tags 60;`;
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST", body: "data=" + encodeURIComponent(q)
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const HOTELS = ["hotel", "guest_house", "hostel", "motel", "apartment", "resort", "chalet"];
+    let items = (data.elements || []).map(el => {
+      const elat = el.lat != null ? el.lat : (el.center && el.center.lat);
+      const elon = el.lon != null ? el.lon : (el.center && el.center.lon);
+      if (elat == null) return null;
+      const t = el.tags || {};
+      const kind = t.tourism || t.amenity || t.shop || t.leisure || t.historic || (t.building && t.building !== "yes" ? t.building : "") || "";
+      return { name: t.name, kind, isHotel: HOTELS.includes(t.tourism), dist: haversine(lat, lon, elat, elon), lat: elat, lon: elon };
+    }).filter(Boolean);
+
+    items.sort((a, b) => (b.isHotel - a.isHotel) || (a.dist - b.dist));
+    const seen = new Set(), uniq = [];
+    for (const it of items) { if (seen.has(it.name)) continue; seen.add(it.name); uniq.push(it); }
+    const top = uniq.slice(0, 8);
+
+    if (!top.length) { box.innerHTML = "Keine benannten Orte im Umkreis von 150 m gefunden."; return; }
+    box.innerHTML =
+      `<div style="font-weight:700; margin-bottom:6px">Benannte Orte in der Nähe (≤150 m):</div>` +
+      top.map(it => `
+        <div style="display:flex; justify-content:space-between; gap:8px; padding:3px 0">
+          <a href="https://www.openstreetmap.org/?mlat=${it.lat}&mlon=${it.lon}#map=19/${it.lat}/${it.lon}" target="_blank" rel="noopener">
+            ${it.isHotel ? "🏨 " : "📍 "}<b>${htmlEsc(it.name)}</b>${it.kind ? ` <span style="color:var(--muted)">· ${htmlEsc(it.kind)}</span>` : ""}
+          </a>
+          <span style="color:var(--muted)">${Math.round(it.dist)} m</span>
+        </div>`).join("") +
+      `<p class="small" style="margin-top:6px">Quelle: OpenStreetMap. Das nächstgelegene Hotel/Gebäude an den GPS-Koordinaten ist meist der gesuchte Ort.</p>`;
+  } catch (e) {
+    box.innerHTML = "Orte in der Nähe nicht abrufbar (" + htmlEsc(e.message) + ").";
   }
 }
 
@@ -883,6 +976,79 @@ async function runClip() {
     setStatus(st, "KI-Analyse fehlgeschlagen: " + e.message + " — braucht Internet (Modell-Download) & WebAssembly.", "err");
   } finally {
     $("btnClip").disabled = false;
+  }
+}
+
+/* ============================================================
+   OCR: Text im Bild lesen (Tesseract.js, on-device).
+   Für Hotel-/Geschäftsnamen, Schilder. Keine Kfz-Nummern/Personen.
+   ============================================================ */
+$("btnOcr").addEventListener("click", runOcr);
+async function runOcr() {
+  if (!lastBlob) return;
+  const st = $("ocrStatus");
+  $("btnOcr").disabled = true;
+  $("ocrResult").innerHTML = "";
+  try {
+    setStatus(st, "Lade OCR-Modul … (beim ersten Mal einmalig)", "busy");
+    if (typeof Tesseract === "undefined") {
+      await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
+    }
+    setStatus(st, "Lese Text …", "busy");
+    const { data } = await Tesseract.recognize($("previewImg").src, "deu+eng", {
+      logger: m => { if (m.status === "recognizing text") setStatus(st, `Lese Text … ${Math.round((m.progress || 0) * 100)}%`, "busy"); }
+    });
+    const text = (data.text || "").trim();
+    if (!text) { setStatus(st, "Kein lesbarer Text gefunden.", ""); return; }
+    const lines = text.split(/\n+/).map(s => s.trim()).filter(s => s.length >= 3);
+    const query = encodeURIComponent(lines.slice(0, 3).join(" "));
+    setStatus(st, "Fertig.", "");
+    $("ocrResult").innerHTML = `
+      <div style="margin-top:8px">
+        <div style="font-weight:700">Erkannter Text:</div>
+        <pre style="white-space:pre-wrap; background:#0c1226; border:1px solid var(--border); border-radius:10px; padding:10px; font-size:13px; color:var(--text); margin-top:6px">${htmlEsc(text)}</pre>
+        <div class="btn-row" style="margin-top:8px">
+          <a class="btn ghost" href="https://www.google.com/search?q=${query}" target="_blank" rel="noopener">🔍 Text googeln</a>
+          <a class="btn ghost" href="https://www.google.com/maps/search/?api=1&query=${query}" target="_blank" rel="noopener">🗺️ In Maps suchen</a>
+        </div>
+        <p class="small" style="margin-top:6px">Tipp: Hotel-/Geschäftsname + „In Maps suchen" führt oft direkt zum Ort.</p>
+      </div>`;
+    if (lastAnalysis) lastAnalysis.ocr = text;
+  } catch (e) {
+    console.error(e);
+    setStatus(st, "OCR fehlgeschlagen: " + e.message, "err");
+  } finally {
+    $("btnOcr").disabled = false;
+  }
+}
+
+/* ============================================================
+   Bildsuche / Google Lens: Foto per Web-Share an Lens & Co. geben.
+   Stärkster realer Weg, ein konkretes Gebäude/Hotel zu finden.
+   ============================================================ */
+$("btnShare").addEventListener("click", shareImage);
+async function shareImage() {
+  if (!lastBlob) return;
+  const links = $("lensLinks");
+  links.innerHTML = "";
+  try {
+    const file = lastBlob instanceof File
+      ? lastBlob
+      : new File([lastBlob], "foto.jpg", { type: lastBlob.type || "image/jpeg" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: "GeoVision", text: "Wo ist das? Bild identifizieren" });
+      links.innerHTML = `Wähle im Teilen-Menü <b>Google Lens</b> oder die <b>Google-App</b>, um den Ort zu finden.`;
+      return;
+    }
+    throw new Error("Direktes Teilen wird hier nicht unterstützt");
+  } catch (e) {
+    if (e && e.name === "AbortError") return; // Nutzer hat abgebrochen
+    links.innerHTML = `${htmlEsc(e.message)}. Öffne eine Bildsuche und lade das Foto manuell hoch:
+      <div class="btn-row" style="margin-top:8px">
+        <a class="btn ghost" href="https://lens.google.com/" target="_blank" rel="noopener">Google Lens</a>
+        <a class="btn ghost" href="https://yandex.com/images/" target="_blank" rel="noopener">Yandex Bilder</a>
+        <a class="btn ghost" href="https://www.bing.com/visualsearch" target="_blank" rel="noopener">Bing Visual</a>
+      </div>`;
   }
 }
 
