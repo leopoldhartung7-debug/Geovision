@@ -42,7 +42,7 @@ export interface AnalysisResult {
   kind: string;
   source_name: string;
   gps: GpsInfo;
-  location_source: "exif" | "ocr" | "inference";
+  location_source: "exif" | "ocr" | "geoclip" | "inference";
   hierarchy: Hierarchy;
   candidates: LocationCandidate[];
   signals: SignalGroup[];

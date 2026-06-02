@@ -3,17 +3,24 @@
 Professionelle Geolocation-KI: schätzt aus Bildern/Videos den wahrscheinlichsten
 Aufnahmeort und **begründet** jede Schlussfolgerung — mit transparenter Unsicherheit.
 
-> **Ehrlichkeit zuerst.** Der Bild-KI-Kern (StreetCLIP) liefert **Kontinent → Land → grobe Region**
-> zuverlässig. **Stadt/Stadtteil** werden **nur** ausgegeben, wenn sie aus **GPS-Metadaten** oder
-> einem **lesbaren Ortsschild** stammen — sonst bleiben sie bewusst leer („nicht bestimmbar") statt
-> geraten. Straßengenaue Identifikation allein aus Pixeln ist nicht möglich; das ist eine
-> Forschungsgrenze, kein Bug.
+> **GeoSpy-Ansatz, ehrlich umgesetzt.** Kern ist **GeoCLIP** (NeurIPS 2023), das — wie
+> kommerzielle Tools (GeoSpy) — **echte GPS-Koordinaten** vorhersagt (Top-k mit
+> Wahrscheinlichkeiten) und sie per Reverse-Geocoding zu **Stadt → Region → Land** auflöst.
+> StreetCLIP liefert ergänzenden Land-/Szenen-Kontext. **GPS-Metadaten** und **lesbare
+> Ortsschilder** haben weiterhin Vorrang (exakt). Wichtig & ehrlich: GeoCLIP-Koordinaten sind
+> eine **Modell-Schätzung** (kein GPS) — die Stadt-Ebene kann ungenau sein; die UI weist Streuung
+> und Unsicherheit offen aus. Eine straßengenaue Garantie allein aus Pixeln gibt es nicht — das ist
+> eine Forschungsgrenze, kein Bug. PIGEON/PIGEOTTO sind stärker, aber ihre Gewichte sind nicht frei nutzbar.
+
+**Entscheidungsreihenfolge für den Ort:** `EXIF-GPS` (exakt) → `Ortsschild→Geocoding` (real) →
+`GeoCLIP-Koordinaten` (Modell-Schätzung: Stadt/Region/Land) → `StreetCLIP` (nur Land/Region).
+GeoCLIP ist optional: Lädt das Modell nicht, fällt die Pipeline automatisch auf StreetCLIP zurück.
 
 ## Architektur
 
 ```
 geovision-pro/
-├── backend/                 FastAPI + PyTorch (StreetCLIP) + SQLAlchemy
+├── backend/                 FastAPI + PyTorch (GeoCLIP + StreetCLIP) + SQLAlchemy
 │   ├── app/
 │   │   ├── main.py          App-Einstieg, Router-Registrierung
 │   │   ├── config.py        Settings (ENV: GEOVISION_*)

@@ -3,14 +3,18 @@
 Decision order for the *location* (most reliable first):
   1. EXIF GPS            -> exact, location_source="exif"
   2. OCR -> geocoded     -> real place from a readable sign, location_source="ocr"
-  3. CLIP/StreetCLIP     -> country/region inference, location_source="inference"
+  3. GeoCLIP             -> predicted GPS coordinates (GeoSpy-style),
+                            reverse-geocoded to place names, location_source="geoclip"
+  4. CLIP/StreetCLIP     -> country/region inference, location_source="inference"
 
-City / district are only filled when (1) or (2) provide them. Otherwise they are
-left null with an honest note instead of being guessed.
+City / district from (3) and (4) are model estimates and are labelled as such in
+the hierarchy note. (1)/(2) provide exact/real places. GeoCLIP is optional: if its
+weights cannot load, the pipeline degrades to (4) automatically.
 """
 from __future__ import annotations
 
 import asyncio
+from math import asin, cos, radians, sin, sqrt
 
 from PIL import Image
 
@@ -18,9 +22,28 @@ from ..schemas import (AnalysisResult, GpsInfo, Hierarchy, LocationCandidate,
                        ReferenceMatch, SignalGroup, SignalScore)
 from . import geocode, ocr, reference
 from .exif import extract_gps, open_image
+from .geoengine import get_geo_engine
 from .labels import (COUNTRY_PROMPT, COUNTRY_NAMES, COUNTRY_TO_CONTINENT,
                      REGION_PROMPT, REGIONS, SIGNAL_GROUPS)
 from .vision import get_engine
+
+
+def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance in km between two (lat, lon) points."""
+    lat1, lon1, lat2, lon2 = map(radians, (a[0], a[1], b[0], b[1]))
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 2 * 6371.0 * asin(sqrt(h))
+
+
+def _short_label(addr: dict, display: str) -> str:
+    """Compact human label from a reverse-geocoded address."""
+    city = (addr.get("city") or addr.get("town") or addr.get("village")
+            or addr.get("municipality") or addr.get("county"))
+    region = addr.get("state") or addr.get("region")
+    country = addr.get("country")
+    parts = [p for p in (city, region, country) if p]
+    return ", ".join(parts) if parts else (display or "")
 
 
 def _analyze_signals(image: Image.Image) -> tuple[list[SignalGroup], dict]:
@@ -63,8 +86,9 @@ def _reasoning_from_signals(tops: dict, country: str) -> str:
 async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
     image = open_image(data)
     engine = get_engine()
+    geo = get_geo_engine()
 
-    # --- visual signals + country inference (CPU/GPU bound -> thread) ---
+    # --- visual signals + coordinate prediction (CPU/GPU bound -> thread) ---
     def _vision():
         groups, tops = _analyze_signals(image)
         countries = engine.zero_shot(image, COUNTRY_NAMES, template=COUNTRY_PROMPT, top_k=10)
@@ -77,9 +101,10 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
                     # strip the appended ", Country" for display
                     region = ranked[0][0].split(",")[0]
         img_vec = engine.embed_image(image)
-        return groups, tops, countries, region, img_vec
+        geo_preds = geo.predict(image)  # [(lat, lon, prob), ...] or [] if unavailable
+        return groups, tops, countries, region, img_vec, geo_preds
 
-    groups, tops, countries, inferred_region, img_vec = await asyncio.to_thread(_vision)
+    groups, tops, countries, inferred_region, img_vec, geo_preds = await asyncio.to_thread(_vision)
 
     # --- EXIF GPS ---
     gps_raw = extract_gps(data)
@@ -156,6 +181,48 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
             ))
         uncertainty = "Mittel — abhängig davon, ob der erkannte Text wirklich der Aufnahmeort ist."
 
+    elif geo_preds:
+        # --- GeoCLIP: real coordinate prediction (GeoSpy-style) -------------
+        location_source = "geoclip"
+        revs = []
+        for lat, lon, _ in geo_preds:
+            rev = await geocode.reverse(lat, lon)
+            revs.append(rev or {})
+        top_addr = revs[0].get("address", {})
+        sc = countries[0][0] if countries else None
+        hierarchy = Hierarchy(
+            continent=COUNTRY_TO_CONTINENT.get(top_addr.get("country")) if top_addr.get("country") else None,
+            country=top_addr.get("country"),
+            region=top_addr.get("state") or top_addr.get("region"),
+            city=top_addr.get("city") or top_addr.get("town") or top_addr.get("village")
+                 or top_addr.get("municipality"),
+            district=top_addr.get("suburb") or top_addr.get("city_district"),
+            note="Aus GeoCLIP-Koordinatenvorhersage rückwärts-geocodiert. Dies ist eine "
+                 "Modell-Schätzung der Koordinaten (kein GPS); die Stadt-/Stadtteil-Ebene "
+                 "kann ungenau sein."
+                 + (f" StreetCLIP-Kontext stützt: {sc}." if sc else ""),
+        )
+        total = sum(p for _, _, p in geo_preds) or 1.0
+        for i, ((lat, lon, p), rev) in enumerate(zip(geo_preds, revs), start=1):
+            addr = rev.get("address", {})
+            label = _short_label(addr, rev.get("display", "")) or f"{lat:.4f}, {lon:.4f}"
+            candidates.append(LocationCandidate(
+                rank=i, label=label, confidence=round(p / total, 3),
+                lat=lat, lon=lon,
+                reasoning="GeoCLIP-Koordinatenvorhersage (approx.). "
+                          + _reasoning_from_signals(tops, hierarchy.country or "dem Land"),
+            ))
+        spread = (_haversine_km((geo_preds[0][0], geo_preds[0][1]),
+                                (geo_preds[1][0], geo_preds[1][1]))
+                  if len(geo_preds) > 1 else 0.0)
+        uncertainty = (
+            f"GeoCLIP-Koordinaten. Streuung Top-1↔Top-2: ~{spread:.0f} km. "
+            + ("Vorhersagen liegen nah beieinander → höhere Zuversicht. " if spread < 25
+               else "Vorhersagen streuen → geringere Zuversicht. ")
+            + (f"StreetCLIP-Kontext nennt {sc}. " if sc else "")
+            + "Koordinaten sind eine Modell-Schätzung, kein GPS."
+        )
+
     else:
         location_source = "inference"
         top_country = countries[0][0] if countries else None
@@ -206,15 +273,69 @@ async def analyze_video(data: bytes, source_name: str = "") -> AnalysisResult:
         return res
 
     engine = get_engine()
+    geo = get_geo_engine()
 
-    def _vote():
+    def _analyze():
         agg: dict[str, float] = {}
+        pts: list[tuple[float, float, float]] = []
         for fr in frames:
             for name, score in engine.zero_shot(fr, COUNTRY_NAMES, template=COUNTRY_PROMPT, top_k=5):
                 agg[name] = agg.get(name, 0.0) + score
-        return agg
+            preds = geo.predict(fr, top_k=1)
+            if preds:
+                pts.append(preds[0])
+        return agg, pts
 
-    agg = await asyncio.to_thread(_vote)
+    agg, pts = await asyncio.to_thread(_analyze)
+
+    # --- GeoCLIP path: aggregate frame coordinates by their medoid ----------
+    if pts:
+        def _cost(i: int) -> float:
+            return sum(_haversine_km((pts[i][0], pts[i][1]), (q[0], q[1])) for q in pts)
+
+        medoid = min(range(len(pts)), key=_cost)
+        mlat, mlon, _ = pts[medoid]
+        spread = sum(_haversine_km((mlat, mlon), (q[0], q[1])) for q in pts) / len(pts)
+        rev = await geocode.reverse(mlat, mlon)
+        addr = (rev or {}).get("address", {})
+
+        uniq: dict[tuple[float, float], tuple[float, float, float]] = {}
+        for lat, lon, p in pts:
+            key = (round(lat, 2), round(lon, 2))
+            if key not in uniq or p > uniq[key][2]:
+                uniq[key] = (lat, lon, p)
+        ordered = sorted(uniq.values(),
+                         key=lambda q: _haversine_km((mlat, mlon), (q[0], q[1])))[:10]
+        candidates = []
+        for i, (lat, lon, p) in enumerate(ordered, start=1):
+            label = f"{lat:.4f}, {lon:.4f}"
+            if i <= 5:  # limit reverse-geocoding network calls
+                r = await geocode.reverse(lat, lon)
+                label = _short_label((r or {}).get("address", {}),
+                                     (r or {}).get("display", "")) or label
+            candidates.append(LocationCandidate(
+                rank=i, label=label, confidence=round(p, 3), lat=lat, lon=lon,
+                reasoning=f"GeoCLIP-Vorhersage aus Videoframe "
+                          f"(~{_haversine_km((mlat, mlon), (lat, lon)):.0f} km vom Zentrum).",
+            ))
+        return AnalysisResult(
+            kind="video", source_name=source_name, location_source="geoclip",
+            hierarchy=Hierarchy(
+                continent=COUNTRY_TO_CONTINENT.get(addr.get("country")) if addr.get("country") else None,
+                country=addr.get("country"),
+                region=addr.get("state") or addr.get("region"),
+                city=addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality"),
+                district=addr.get("suburb") or addr.get("city_district"),
+                note=f"GeoCLIP-Koordinaten über {len(frames)} Frames; zentralster Punkt (Medoid) "
+                     f"rückwärts-geocodiert. Mittlere Streuung ~{spread:.0f} km. Modell-Schätzung, kein GPS.",
+            ),
+            candidates=candidates,
+            uncertainty=(f"Mittel — GeoCLIP-Koordinaten über {len(frames)} Frames, "
+                         f"mittlere Streuung zum Zentrum ~{spread:.0f} km. Kein GPS."),
+            model_used=engine.model_name or "(lazy)",
+        )
+
+    # --- fallback: StreetCLIP country vote ----------------------------------
     total = sum(agg.values()) or 1.0
     ranked = sorted(((k, v / total) for k, v in agg.items()), key=lambda x: x[1], reverse=True)[:10]
 

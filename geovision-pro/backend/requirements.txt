@@ -21,6 +21,11 @@ numpy==2.2.1
 torch==2.5.1
 transformers==4.48.0
 
+# GeoCLIP — real GPS-coordinate prediction (the GeoSpy-style core).
+# Pulls its own weights from HuggingFace on first use. Optional at runtime:
+# the service degrades to StreetCLIP country inference if it cannot load.
+geoclip==1.2.0
+
 # Video frame extraction
 opencv-python-headless==4.11.0.86
 

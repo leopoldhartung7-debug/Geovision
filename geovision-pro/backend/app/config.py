@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     device: str = "auto"  # "auto" | "cpu" | "cuda"
     model_lazy_load: bool = True
 
+    # GeoCLIP — predicts real GPS coordinates (GeoSpy-style). Optional: if the
+    # `geoclip` package/weights are missing, we fall back to StreetCLIP country
+    # inference. This is what lifts results from "country guess" to coordinates.
+    enable_geoclip: bool = True
+    geoclip_top_k: int = 5         # number of coordinate candidates to return
+
     # External services
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     nominatim_email: str = ""  # set to identify yourself per OSM usage policy
