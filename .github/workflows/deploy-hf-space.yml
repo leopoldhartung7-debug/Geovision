@@ -1,0 +1,41 @@
+name: Deploy to Hugging Face Space
+
+# Phone-friendly deploy: run this from the GitHub "Actions" tab (Run workflow).
+# It pushes the single-container app to your Hugging Face Space, which then builds
+# it and serves a public, phone-openable URL (https://<user>-<space>.hf.space).
+#
+# One-time setup (all doable in a phone browser):
+#   1. Create a free account at https://huggingface.co
+#   2. Create a *write* token: https://huggingface.co/settings/tokens
+#   3. In this GitHub repo: Settings → Secrets and variables → Actions →
+#      New repository secret → name HF_TOKEN, value = your token
+#   4. Actions tab → "Deploy to Hugging Face Space" → Run workflow →
+#      enter your HF username → Run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hf_username:
+        description: "Your Hugging Face username"
+        required: true
+      space_name:
+        description: "Space name to create/update"
+        required: false
+        default: "geovision-pro"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push app to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        working-directory: geovision-pro
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::Missing HF_TOKEN secret. Add it in Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          chmod +x deploy_hf_space.sh
+          ./deploy_hf_space.sh "${{ inputs.hf_username }}" "${{ inputs.space_name }}"

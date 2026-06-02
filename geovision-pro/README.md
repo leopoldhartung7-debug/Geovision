@@ -46,7 +46,23 @@ geovision-pro/
 └── .env.example
 ```
 
-## Schnellstart (Docker, empfohlen)
+## Online stellen (Handy-Link, ohne Terminal)
+
+Du willst nur einen Link, den du am Handy öffnest? Deploy auf **Hugging Face Spaces** (gratis),
+komplett im Browser:
+
+1. Account anlegen: <https://huggingface.co> → **Write-Token** erstellen unter
+   <https://huggingface.co/settings/tokens>
+2. In diesem GitHub-Repo: **Settings → Secrets and variables → Actions → New repository secret**,
+   Name `HF_TOKEN`, Wert = dein Token
+3. **Actions**-Tab → Workflow **„Deploy to Hugging Face Space"** → **Run workflow** →
+   HF-Benutzername eingeben → **Run**
+4. Nach dem Build erreichbar unter **`https://<dein-user>-geovision-pro.hf.space`**
+
+(Die Action baut alles in *einen* Container — FastAPI liefert die React-App + API; SQLite statt
+Postgres. Erster Analyse-Request lädt einmalig die Modelle.)
+
+## Schnellstart (Docker, lokal)
 
 ```bash
 cd geovision-pro
