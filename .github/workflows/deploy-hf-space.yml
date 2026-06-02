@@ -22,6 +22,14 @@ on:
         description: "Space name to create/update"
         required: false
         default: "geovision-pro"
+  # Also auto-deploys on every push to this branch (no need for the default
+  # branch / no "Run workflow" button required). Needs the HF_TOKEN secret and
+  # the HF_USERNAME variable to be set in the repo.
+  push:
+    branches: ["claude/geovision-location-app-rsAvz"]
+    paths:
+      - "geovision-pro/**"
+      - ".github/workflows/deploy-hf-space.yml"
 
 jobs:
   deploy:
@@ -31,11 +39,18 @@ jobs:
       - name: Push app to the Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ vars.HF_USERNAME }}
         working-directory: geovision-pro
         run: |
           if [ -z "$HF_TOKEN" ]; then
-            echo "::error::Missing HF_TOKEN secret. Add it in Settings → Secrets and variables → Actions."
+            echo "::error::Missing HF_TOKEN secret. Add it in Settings → Secrets and variables → Actions (Secrets tab)."
+            exit 1
+          fi
+          USER_NAME="${{ inputs.hf_username }}"
+          USER_NAME="${USER_NAME:-$HF_USERNAME}"
+          if [ -z "$USER_NAME" ]; then
+            echo "::error::Missing HF username. Add an HF_USERNAME variable (Variables tab) or run the workflow manually with the username input."
             exit 1
           fi
           chmod +x deploy_hf_space.sh
-          ./deploy_hf_space.sh "${{ inputs.hf_username }}" "${{ inputs.space_name }}"
+          ./deploy_hf_space.sh "$USER_NAME" "${{ inputs.space_name || 'geovision-pro' }}"

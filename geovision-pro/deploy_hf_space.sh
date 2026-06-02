@@ -9,7 +9,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-USER="${1:?Usage: HF_TOKEN=hf_xxx ./deploy_hf_space.sh <hf-username> [space-name]}"
+USER="${1:-${HF_USERNAME:-}}"
+[ -n "$USER" ] || { echo "Usage: HF_TOKEN=hf_xxx ./deploy_hf_space.sh <hf-username> [space-name]  (or set HF_USERNAME)"; exit 1; }
 SPACE="${2:-geovision-pro}"
 : "${HF_TOKEN:?Set HF_TOKEN env var (a Hugging Face *write* token)}"
 REPO="${USER}/${SPACE}"
