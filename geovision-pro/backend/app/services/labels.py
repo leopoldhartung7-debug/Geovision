@@ -36,6 +36,24 @@ COUNTRY_TO_CONTINENT: dict[str, str] = {name: cont for name, cont in COUNTRIES}
 COUNTRY_NAMES: list[str] = [name for name, _ in COUNTRIES]
 
 COUNTRY_PROMPT = "a street level photo taken in {}"
+REGION_PROMPT = "a street level photo taken in {}"
+
+# Optional region prompts for a few large countries. Used only to refine the
+# "Region" level when the location is pure inference. Still inference (not exact).
+REGIONS: dict[str, list[str]] = {
+    "Germany": ["Bavaria, Germany", "Berlin, Germany", "Hamburg, Germany",
+                "North Rhine-Westphalia, Germany", "Saxony, Germany",
+                "Baden-Württemberg, Germany", "Hesse, Germany", "Lower Saxony, Germany"],
+    "United States": ["California, USA", "Texas, USA", "Florida, USA", "New York, USA",
+                      "Arizona, USA", "Colorado, USA", "Washington State, USA", "Louisiana, USA"],
+    "France": ["Île-de-France", "Provence, France", "Brittany, France", "Normandy, France",
+               "Occitanie, France", "Auvergne-Rhône-Alpes, France"],
+    "Italy": ["Tuscany, Italy", "Sicily, Italy", "Lombardy, Italy", "Veneto, Italy",
+              "Lazio, Italy", "Campania, Italy", "Piedmont, Italy"],
+    "Spain": ["Andalusia, Spain", "Catalonia, Spain", "Madrid, Spain", "Valencia, Spain",
+              "Galicia, Spain", "Basque Country, Spain"],
+    "United Kingdom": ["England", "Scotland", "Wales", "Northern Ireland"],
+}
 
 # Visual-analysis signal groups. Each maps a human label -> CLIP prompt.
 # The fusion step turns the top score of each group into an explainability weight.

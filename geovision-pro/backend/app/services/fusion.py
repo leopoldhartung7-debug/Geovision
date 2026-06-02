@@ -19,7 +19,7 @@ from ..schemas import (AnalysisResult, GpsInfo, Hierarchy, LocationCandidate,
 from . import geocode, ocr, reference
 from .exif import extract_gps, open_image
 from .labels import (COUNTRY_PROMPT, COUNTRY_NAMES, COUNTRY_TO_CONTINENT,
-                     SIGNAL_GROUPS)
+                     REGION_PROMPT, REGIONS, SIGNAL_GROUPS)
 from .vision import get_engine
 
 
@@ -68,10 +68,18 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
     def _vision():
         groups, tops = _analyze_signals(image)
         countries = engine.zero_shot(image, COUNTRY_NAMES, template=COUNTRY_PROMPT, top_k=10)
+        region = None
+        if countries:
+            regs = REGIONS.get(countries[0][0])
+            if regs:
+                ranked = engine.zero_shot(image, regs, template=REGION_PROMPT, top_k=1)
+                if ranked:
+                    # strip the appended ", Country" for display
+                    region = ranked[0][0].split(",")[0]
         img_vec = engine.embed_image(image)
-        return groups, tops, countries, img_vec
+        return groups, tops, countries, region, img_vec
 
-    groups, tops, countries, img_vec = await asyncio.to_thread(_vision)
+    groups, tops, countries, inferred_region, img_vec = await asyncio.to_thread(_vision)
 
     # --- EXIF GPS ---
     gps_raw = extract_gps(data)
@@ -151,12 +159,14 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
     else:
         location_source = "inference"
         top_country = countries[0][0] if countries else None
+        region_note = " Region ist eine grobe Inferenz." if inferred_region else ""
         hierarchy = Hierarchy(
             continent=COUNTRY_TO_CONTINENT.get(top_country) if top_country else None,
             country=top_country,
-            region=None, city=None, district=None,
+            region=inferred_region, city=None, district=None,
             note="Stadt/Stadtteil sind aus dem Bildinhalt nicht zuverlässig bestimmbar "
-                 "(kein GPS, kein lesbares Ortsschild). Es wird ehrlich nur Land/Region geschätzt.",
+                 "(kein GPS, kein lesbares Ortsschild). Es wird ehrlich nur Land/Region geschätzt."
+                 + region_note,
         )
         # Geocode centroids of the top countries for map markers (limit network calls)
         coords: dict[str, tuple[float, float]] = {}
