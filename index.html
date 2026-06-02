@@ -201,6 +201,22 @@
       ⚠️ Grobe Tendenz, <b>kein Stadt- oder Land-Treffer.</b> Diese Schätzung beruht nur auf Farb-/Strukturmerkmalen und ist regelbasiert. Die Konfidenz ist bewusst niedrig gedeckelt.
     </div>
     <div id="estimateBody"><p class="small" style="margin-top:12px">Noch keine Schätzung.</p></div>
+
+    <div style="border-top:1px solid var(--border); margin:18px 0 12px"></div>
+    <div class="row-between">
+      <div style="font-size:14px; font-weight:800">🧠 Genaue KI-Analyse im Browser</div>
+      <span class="pill ai">On-Device</span>
+    </div>
+    <p class="small" style="margin-top:6px">
+      Echtes neuronales Netz (CLIP), läuft <b>komplett auf deinem Gerät</b> — kein Server, keine Uploads.
+      Lädt beim ersten Mal einmalig ein Modell (~80–150 MB) herunter, am besten im WLAN. Danach aus dem Cache.
+      Deutlich treffsicherer als die Farb-Heuristik oben.
+    </p>
+    <div class="btn-row" style="margin-top:10px">
+      <button class="btn" id="btnClip" disabled>KI-Analyse starten</button>
+    </div>
+    <div class="status" id="clipStatus"></div>
+    <div id="clipResult"></div>
   </section>
 
   <!-- ======================= BEGRÜNDUNG ======================= -->
@@ -277,7 +293,7 @@
 const $ = (id) => document.getElementById(id);
 const LS_HISTORY = "geovision.history.v1";
 const LS_AIURL  = "geovision.aiurl.v1";
-const CONFIDENCE_CAP = 0.35; // harte Obergrenze für die regelbasierte Schätzung
+const CONFIDENCE_CAP = 0.50; // harte Obergrenze für die (regelbasierte) Heuristik
 
 let map = null, markerLayer = null;
 let lastAnalysis = null;     // letztes Analyseergebnis (für KI/Historie)
@@ -338,6 +354,10 @@ async function handleFile(file) {
 
     // KI-Button freischalten, falls URL gesetzt
     $("btnAi").disabled = !($("aiUrl").value.trim());
+    // On-Device-KI immer verfügbar, sobald ein Bild da ist
+    $("btnClip").disabled = false;
+    $("clipResult").innerHTML = "";
+    setStatus($("clipStatus"), "");
 
     // Karte + Geocoding nur bei echtem GPS
     if (gps.hasGps) {
@@ -454,69 +474,88 @@ async function reverseGeocode(lat, lon) {
    ============================================================ */
 function computeFeatures(img) {
   // Downscale für Performance
-  const MAX = 256;
+  const MAX = 320;
   const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-  const w = Math.max(1, Math.round(img.width * scale));
-  const h = Math.max(1, Math.round(img.height * scale));
+  const w = Math.max(2, Math.round(img.width * scale));
+  const h = Math.max(2, Math.round(img.height * scale));
   const cv = document.createElement("canvas");
   cv.width = w; cv.height = h;
   const ctx = cv.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0, w, h);
   const { data } = ctx.getImageData(0, 0, w, h);
   const n = w * h;
-
-  let sumLum = 0, sumSat = 0;
-  let green = 0, snow = 0, warm = 0, blueSky = 0;
-  let skyR = 0, skyG = 0, skyB = 0, skyCount = 0;
   const gray = new Float32Array(n);
 
+  let sumLum = 0, sumSat = 0;
+  let green = 0, snow = 0, warm = 0;
+  let skyBlue = 0, skyCount = 0, skyR = 0, skyG = 0, skyB = 0;
+  const topBand = h * 0.40; // oberer Bildbereich = Himmel-Zone
+
+  // Pass 1: globale Statistik + Himmel-Zone
   for (let i = 0, p = 0; i < data.length; i += 4, p++) {
     const r = data[i], g = data[i+1], b = data[i+2];
     const lum = 0.2126*r + 0.7152*g + 0.0722*b;
     gray[p] = lum;
     sumLum += lum;
-
     const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
     const sat = mx === 0 ? 0 : (mx - mn) / mx;
     sumSat += sat;
+    if (g > r + 12 && g > b + 6) green++;          // Vegetation
+    if (lum > 205 && sat < 0.12) snow++;            // Schnee/Weiß
+    if (r > g + 12 && r > b + 28) warm++;           // warme Töne
 
-    // Vegetation: Grün dominiert
-    if (g > r + 12 && g > b + 6) green++;
-    // Schnee/Weiß: hell + entsättigt
-    if (lum > 200 && sat < 0.12) snow++;
-    // Warme Töne: Rot dominiert deutlich
-    if (r > g + 10 && r > b + 25) warm++;
-
-    // Oberes Drittel = Himmel-Region
     const row = (p / w) | 0;
-    if (row < h / 3) {
+    if (row < topBand) {
       skyR += r; skyG += g; skyB += b; skyCount++;
-      if (b > r + 10 && b > g) blueSky++;
+      if (b > r + 8 && b >= g - 4 && b > 90) skyBlue++; // blauer Himmel oben
     }
   }
 
-  // Kanten-/Strukturdichte (Sobel-Annäherung) → Proxy für Bebauung
+  // Pass 2: Kanten (Bebauung) + Wasser- & Sand-Erkennung mit räumlichen Bändern
   let edgeSum = 0, edgeN = 0;
+  let water = 0, lowerCount = 0, sand = 0, bottomCount = 0, greenLower = 0;
+  const lowerStart = h * 0.34;   // ab hier: mögliche Wasserfläche/Boden
+  const bottomStart = h * 0.60;  // unteres Drittel: Vordergrund/Sand
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const idx = y * w + x;
       const gx = gray[idx-1] - gray[idx+1];
       const gy = gray[idx-w] - gray[idx+w];
-      edgeSum += Math.sqrt(gx*gx + gy*gy);
-      edgeN++;
+      const grad = Math.sqrt(gx*gx + gy*gy);
+      edgeSum += grad; edgeN++;
+
+      const di = idx * 4;
+      const r = data[di], g = data[di+1], b = data[di+2];
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const sat = mx === 0 ? 0 : (mx - mn) / mx;
+      const lum = gray[idx];
+
+      if (y >= lowerStart) {
+        lowerCount++;
+        // Wasser: blau/türkis, in unterer Bildhälfte, relativ glatt (geringe Textur)
+        if (b > r + 6 && b >= g - 10 && b > 70 && sat > 0.06 && sat < 0.9 && grad < 24) water++;
+        if (g > r + 12 && g > b + 6) greenLower++;
+      }
+      if (y >= bottomStart) {
+        bottomCount++;
+        // Sand/Strand: warm-neutral (beige), mittlere Helligkeit, geringe Sättigung
+        if (r >= g - 4 && g >= b && lum > 100 && lum < 235 && sat < 0.32 && (r - b) > 8) sand++;
+      }
     }
   }
-  const edgeDensity = clamp((edgeSum / edgeN) / 90, 0, 1); // normiert
-
+  const edgeDensity = clamp((edgeSum / edgeN) / 90, 0, 1);
   const skyColor = skyCount ? { r: skyR/skyCount, g: skyG/skyCount, b: skyB/skyCount } : { r:0,g:0,b:0 };
 
   return {
     brightness: clamp((sumLum / n) / 255, 0, 1),
     saturation: clamp(sumSat / n, 0, 1),
     vegetation: green / n,
+    greenLower: lowerCount ? greenLower / lowerCount : 0,
     snow: snow / n,
     warmth: warm / n,
-    blueSky: skyCount ? blueSky / skyCount : 0,
+    skyRatio: skyCount ? skyBlue / skyCount : 0,
+    waterRatio: lowerCount ? water / lowerCount : 0,
+    sandRatio: bottomCount ? sand / bottomCount : 0,
     builtUp: edgeDensity,
     skyColor,
     dims: { w: img.width, h: img.height }
@@ -532,12 +571,14 @@ function renderFeatures(f) {
 
   const sky = f.skyColor;
   $("featuresBody").innerHTML = `
+    ${bar("Wasser / Meer (untere Hälfte)", f.waterRatio)}
+    ${bar("Sand / Strand (Vordergrund)", f.sandRatio)}
+    ${bar("Himmel (Blauanteil oben)", f.skyRatio)}
     ${bar("Vegetation / Grünanteil", f.vegetation)}
     ${bar("Bebauung / Strukturdichte", f.builtUp)}
+    ${bar("Schnee / Weißanteil", f.snow)}
     ${bar("Helligkeit / Licht", f.brightness)}
     ${bar("Farbsättigung", f.saturation)}
-    ${bar("Himmel (Blauanteil oben)", f.blueSky)}
-    ${bar("Schnee / Weißanteil", f.snow)}
     ${bar("Warme Töne", f.warmth)}
     <div class="feat">
       <div class="label">
@@ -554,22 +595,28 @@ function renderFeatures(f) {
    Ähnlichkeit der gemessenen Merkmale zu jedem Profil, normieren
    zu Top-5 und deckeln die Konfidenz hart (CONFIDENCE_CAP).
    ============================================================ */
+// Szenen-/Regionstypen mit erwarteten Merkmalsprofilen (jeweils 0..1).
+// Schlüssel: veg, gLow(=greenLower), built, water, sand, sky, snow, warm, bright, sat
 const REGION_PROFILES = [
-  { name: "Tropisch / Regenwald",      veg: 0.55, built: 0.3,  bright: 0.55, sat: 0.6,  blue: 0.4,  snow: 0.0,  warm: 0.2 },
-  { name: "Aride Zone / Wüste",        veg: 0.05, built: 0.2,  bright: 0.75, sat: 0.35, blue: 0.5,  snow: 0.0,  warm: 0.6 },
-  { name: "Gemäßigt / Mitteleuropa",   veg: 0.35, built: 0.45, bright: 0.5,  sat: 0.35, blue: 0.45, snow: 0.05, warm: 0.25 },
-  { name: "Mediterran / Küste",        veg: 0.25, built: 0.4,  bright: 0.65, sat: 0.45, blue: 0.6,  snow: 0.0,  warm: 0.45 },
-  { name: "Polar / Schnee / Hochgebirge", veg: 0.05, built: 0.1, bright: 0.8, sat: 0.15, blue: 0.4,  snow: 0.55, warm: 0.1 },
-  { name: "Urban / Großstadt",         veg: 0.1,  built: 0.8,  bright: 0.45, sat: 0.3,  blue: 0.3,  snow: 0.02, warm: 0.3 },
-  { name: "Alpin / Gebirge (grün)",    veg: 0.4,  built: 0.25, bright: 0.55, sat: 0.4,  blue: 0.5,  snow: 0.2,  warm: 0.2 },
+  { name: "Strand / Meer / Küste",        veg:0.06, gLow:0.05, built:0.20, water:0.45, sand:0.35, sky:0.45, snow:0.00, warm:0.25, bright:0.62, sat:0.40 },
+  { name: "Küstenstadt am Meer",          veg:0.10, gLow:0.08, built:0.55, water:0.30, sand:0.12, sky:0.35, snow:0.00, warm:0.30, bright:0.55, sat:0.40 },
+  { name: "Großstadt / urban",            veg:0.08, gLow:0.06, built:0.80, water:0.03, sand:0.05, sky:0.30, snow:0.00, warm:0.30, bright:0.45, sat:0.30 },
+  { name: "Wald / Vegetation",            veg:0.50, gLow:0.55, built:0.25, water:0.02, sand:0.03, sky:0.20, snow:0.00, warm:0.20, bright:0.45, sat:0.45 },
+  { name: "Offene Landschaft / Felder",   veg:0.32, gLow:0.45, built:0.20, water:0.02, sand:0.10, sky:0.50, snow:0.00, warm:0.28, bright:0.60, sat:0.38 },
+  { name: "Berge / Hochgebirge (Schnee)", veg:0.10, gLow:0.10, built:0.25, water:0.02, sand:0.05, sky:0.45, snow:0.45, warm:0.10, bright:0.72, sat:0.22 },
+  { name: "Gebirge (grün) / Alpin",       veg:0.38, gLow:0.40, built:0.28, water:0.03, sand:0.05, sky:0.48, snow:0.12, warm:0.20, bright:0.55, sat:0.42 },
+  { name: "Wüste / Aride Zone",           veg:0.04, gLow:0.03, built:0.15, water:0.02, sand:0.45, sky:0.50, snow:0.00, warm:0.55, bright:0.75, sat:0.30 },
+  { name: "Tropisch / üppig grün",        veg:0.55, gLow:0.55, built:0.20, water:0.06, sand:0.05, sky:0.35, snow:0.00, warm:0.25, bright:0.55, sat:0.62 },
+  { name: "Polar / Schnee",               veg:0.02, gLow:0.02, built:0.06, water:0.02, sand:0.02, sky:0.40, snow:0.62, warm:0.05, bright:0.85, sat:0.12 },
 ];
 
-// Gewichtung der Merkmale
-const W = { veg: 1.3, built: 1.1, bright: 0.7, sat: 0.6, blue: 0.8, snow: 1.4, warm: 0.9 };
+// Gewichtung — diskriminative Merkmale zählen mehr
+const W = { veg:1.2, gLow:0.8, built:1.2, water:1.7, sand:1.3, sky:0.7, snow:1.5, warm:0.9, bright:0.5, sat:0.5 };
 
 function estimateRegion(f) {
-  const m = { veg: f.vegetation, built: f.builtUp, bright: f.brightness,
-              sat: f.saturation, blue: f.blueSky, snow: f.snow, warm: f.warmth };
+  const m = { veg:f.vegetation, gLow:f.greenLower, built:f.builtUp, water:f.waterRatio,
+              sand:f.sandRatio, sky:f.skyRatio, snow:f.snow, warm:f.warmth,
+              bright:f.brightness, sat:f.saturation };
 
   const scored = REGION_PROFILES.map(p => {
     let dist = 0, wsum = 0;
@@ -579,7 +626,7 @@ function estimateRegion(f) {
       wsum += W[k];
     }
     const rmse = Math.sqrt(dist / wsum);     // 0 = perfekt, größer = schlechter
-    const sim = Math.exp(-3.0 * rmse);        // Ähnlichkeit 0..1
+    const sim = Math.exp(-4.5 * rmse);        // Ähnlichkeit 0..1 (schärfer)
     return { name: p.name, sim };
   });
 
@@ -620,15 +667,15 @@ function buildReasoning(f, est, gps) {
     items.push(`<li><b>Kein GPS</b> im Bild → nur grobe Tendenz möglich.</li>`);
   }
   const tag = (cond, txt) => { if (cond) items.push("<li>" + txt + "</li>"); };
-  tag(f.vegetation > 0.35, `Hoher <b>Grünanteil</b> (${pct(f.vegetation)}%) → spricht für vegetationsreiche/gemäßigte oder tropische Region.`);
-  tag(f.vegetation < 0.1,  `Sehr wenig <b>Vegetation</b> (${pct(f.vegetation)}%) → eher arid, urban oder Schnee.`);
+  tag(f.waterRatio > 0.22, `Großer <b>Wasseranteil</b> (${pct(f.waterRatio)}% der unteren Bildhälfte, glatt & blau) → Meer, See oder Küste.`);
+  tag(f.sandRatio > 0.22,  `<b>Sand-/Strandtöne</b> im Vordergrund (${pct(f.sandRatio)}%) → Strand oder trockener Boden.`);
+  tag(f.skyRatio > 0.45,   `Viel <b>blauer Himmel</b> oben (${pct(f.skyRatio)}%) → Außenaufnahme, offener Horizont.`);
+  tag(f.vegetation > 0.35, `Hoher <b>Grünanteil</b> (${pct(f.vegetation)}%) → vegetationsreiche/gemäßigte oder tropische Region.`);
+  tag(f.vegetation < 0.08, `Sehr wenig <b>Vegetation</b> (${pct(f.vegetation)}%) → Wasser, arid, urban oder Schnee.`);
   tag(f.builtUp > 0.6,     `Hohe <b>Strukturdichte</b> (${pct(f.builtUp)}%) → viel Bebauung, deutet auf urbanes Umfeld.`);
   tag(f.snow > 0.25,       `Hoher <b>Weiß-/Schneeanteil</b> (${pct(f.snow)}%) → polar, winterlich oder Hochgebirge.`);
   tag(f.warmth > 0.4,      `Viele <b>warme Töne</b> (${pct(f.warmth)}%) → trockenes/sonniges Klima oder Abendlicht.`);
-  tag(f.blueSky > 0.5,     `Deutlicher <b>blauer Himmel</b> oben → klares Wetter, gute Sicht.`);
-  tag(f.brightness > 0.7,  `Sehr <b>helles</b> Bild (${pct(f.brightness)}%) → starke Sonne, Schnee oder heller Untergrund.`);
-  tag(f.brightness < 0.3,  `Eher <b>dunkles</b> Bild (${pct(f.brightness)}%) → Innenraum, Dämmerung oder bedeckt.`);
-  items.push(`<li>Wahrscheinlichste Tendenz: <b>${est.top5[0].name}</b> (relativ, niedrige Sicherheit).</li>`);
+  items.push(`<li>Wahrscheinlichste Tendenz (Heuristik): <b>${est.top5[0].name}</b> — für ein verlässliches Ergebnis die On-Device-KI unten starten.</li>`);
   return items;
 }
 function renderReasoning(items) {
@@ -768,6 +815,76 @@ $("btnExport").addEventListener("click", () => {
 $("btnClearHist").addEventListener("click", () => {
   if (confirm("Gesamte Historie löschen?")) { persistHistory([]); renderHistory(); }
 });
+
+/* ============================================================
+   On-Device-KI: CLIP zero-shot (transformers.js), läuft lokal im Browser.
+   Echtes neuronales Netz → deutlich besser als die Farb-Heuristik.
+   Modell wird beim ersten Aufruf einmalig geladen (Cache danach).
+   ============================================================ */
+let clipPipe = null;
+const CLIP_LABELS = [
+  { en: "a photo of a beach with the sea and sand",      de: "Strand / Meer / Küste" },
+  { en: "a photo of a coastal town next to the ocean",   de: "Küstenstadt am Meer" },
+  { en: "a photo of a big city with tall buildings",     de: "Großstadt / urban" },
+  { en: "a photo of a small town or village",            de: "Kleinstadt / Dorf" },
+  { en: "a photo of a harbor with boats",                de: "Hafen / Boote" },
+  { en: "a photo of green fields and farmland",          de: "Felder / Landwirtschaft" },
+  { en: "a photo of a dense forest",                     de: "Wald" },
+  { en: "a photo of a tropical island with palm trees",  de: "Tropische Insel" },
+  { en: "a photo of a desert with sand dunes",           de: "Wüste" },
+  { en: "a photo of green mountains",                    de: "Gebirge (grün)" },
+  { en: "a photo of snowy mountains or glaciers",        de: "Schnee / Hochgebirge" },
+  { en: "a photo of a snowy winter landscape",           de: "Winterlandschaft" },
+  { en: "a photo of a lake surrounded by mountains",     de: "See / Gebirgssee" },
+  { en: "a photo of a river running through a city",     de: "Fluss in der Stadt" },
+  { en: "an indoor photo taken inside a building",       de: "Innenraum" },
+];
+
+$("btnClip").addEventListener("click", runClip);
+
+async function runClip() {
+  if (!lastBlob) return;
+  const st = $("clipStatus");
+  $("btnClip").disabled = true;
+  $("clipResult").innerHTML = "";
+  try {
+    setStatus(st, "Lade KI-Modell … (beim ersten Mal einmalig, bitte Geduld)", "busy");
+    const tf = await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
+    tf.env.allowLocalModels = false;
+    if (!clipPipe) {
+      clipPipe = await tf.pipeline("zero-shot-image-classification", "Xenova/clip-vit-base-patch32", {
+        progress_callback: (p) => {
+          if (p && p.status === "progress" && p.file) {
+            setStatus(st, `Lade Modell: ${p.file} — ${Math.round(p.progress || 0)}%`, "busy");
+          }
+        }
+      });
+    }
+    setStatus(st, "Analysiere Bild …", "busy");
+    const out = await clipPipe($("previewImg").src, CLIP_LABELS.map(l => l.en));
+    const mapDe = Object.fromEntries(CLIP_LABELS.map(l => [l.en, l.de]));
+    const top = out.slice(0, 5);
+
+    $("clipResult").innerHTML =
+      `<div style="margin-top:12px"><span class="pill ai">CLIP On-Device · echte Scores</span></div>` +
+      top.map((p, i) => `
+        <div class="est-row">
+          <span class="rank">${i+1}</span>
+          <span class="name">${mapDe[p.label] || p.label}</span>
+          <span class="bar"><span style="width:${clamp(p.score,0,1)*100}%"></span></span>
+          <span class="pct">${pct(p.score)}%</span>
+        </div>`).join("") +
+      `<p class="small" style="margin-top:8px">Szenen-/Biom-Erkennung mit echtem neuronalem Netz, ${out.length} Kategorien.
+       Für ein konkretes <b>Land/Stadt</b> (statt Szenentyp) brauchst du zusätzlich den optionalen StreetCLIP-Server.</p>`;
+    setStatus(st, "Fertig.", "");
+    if (lastAnalysis) lastAnalysis.clip = top.map(p => ({ label: mapDe[p.label] || p.label, score: p.score }));
+  } catch (e) {
+    console.error(e);
+    setStatus(st, "KI-Analyse fehlgeschlagen: " + e.message + " — braucht Internet (Modell-Download) & WebAssembly.", "err");
+  } finally {
+    $("btnClip").disabled = false;
+  }
+}
 
 /* ============================================================
    4) Optionaler KI-Server (StreetCLIP)
