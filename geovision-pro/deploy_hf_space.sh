@@ -35,6 +35,14 @@ BODY="$(printf '%s' "$RESP" | sed '$d')"
 case "$CODE" in
   200|201) echo "    Space angelegt." ;;
   409)     echo "    Space existiert bereits — wird aktualisiert." ;;
+  401|403)
+    echo ""
+    echo "FEHLER: Dein HF_TOKEN hat KEINE Schreibrechte (HTTP ${CODE})."
+    echo "Antwort: ${BODY}"
+    echo "-> Lösung: Erstelle auf https://huggingface.co/settings/tokens einen"
+    echo "   NEUEN Token mit Rolle/Typ 'Write' und aktualisiere damit das GitHub-"
+    echo "   Secret HF_TOKEN. Dann den Workflow erneut starten."
+    exit 1 ;;
   *)       echo "    WARNUNG: create-API antwortete HTTP ${CODE}: ${BODY}" ;;
 esac
 
