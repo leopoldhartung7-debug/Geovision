@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b1020" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="GeoVision" />
+<title>GeoVision — Standortschätzung aus Fotos</title>
+
+<!-- PWA Manifest (inline data-URI, damit alles in einer Datei bleibt). -->
+<!-- Hinweis: Volle Offline-Funktion via Service Worker erfordert echtes Hosting (https),
+     beim Öffnen über file:// ist das eingeschränkt. "Zum Homescreen hinzufügen" geht trotzdem. -->
+<link rel="manifest" href='data:application/json,{"name":"GeoVision","short_name":"GeoVision","display":"standalone","background_color":"%230b1020","theme_color":"%230b1020","start_url":".","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 192 192%27%3E%3Crect width=%27192%27 height=%27192%27 rx=%2742%27 fill=%27%230b1020%27/%3E%3Ccircle cx=%2796%27 cy=%2784%27 r=%2738%27 fill=%27none%27 stroke=%27%2356d4c4%27 stroke-width=%2710%27/%3E%3Cpath d=%27M96 122 L96 168%27 stroke=%27%2356d4c4%27 stroke-width=%2710%27 stroke-linecap=%27round%27/%3E%3C/svg%3E","sizes":"192x192","type":"image/svg+xml","purpose":"any"}]}' />
+
+<!-- Leaflet (Karte) via CDN -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+
+<style>
+  :root {
+    --bg: #0b1020;
+    --bg-2: #121830;
+    --card: #161d38;
+    --card-2: #1b2342;
+    --border: #283154;
+    --text: #e8ecf7;
+    --muted: #93a0c0;
+    --accent: #56d4c4;
+    --accent-2: #6c8cff;
+    --warn: #ffb454;
+    --bad: #ff6b8a;
+    --good: #6ee7a8;
+    --radius: 16px;
+    --shadow: 0 8px 30px rgba(0,0,0,0.35);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #15203f 0%, var(--bg) 55%);
+    color: var(--text);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 16px 16px 64px; }
+
+  header.app { text-align: center; padding: 18px 0 8px; }
+  header.app .logo {
+    display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.3px;
+    font-size: 26px;
+  }
+  header.app .logo .dot { color: var(--accent); }
+  header.app .tag { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+  .card {
+    background: linear-gradient(180deg, var(--card) 0%, var(--card-2) 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin: 14px 0;
+    box-shadow: var(--shadow);
+  }
+  .card h2 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .num {
+    width: 22px; height: 22px; border-radius: 7px; background: var(--accent-2);
+    color: #0b1020; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn {
+    flex: 1 1 0; min-width: 130px; cursor: pointer; border: none; border-radius: 12px;
+    padding: 14px 16px; font-size: 15px; font-weight: 700; color: #07101f;
+    background: linear-gradient(180deg, var(--accent) 0%, #38b6a8 100%);
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    transition: transform .08s ease, filter .15s ease;
+  }
+  .btn.secondary { background: linear-gradient(180deg, var(--accent-2) 0%, #4f6fe0 100%); color: #fff; }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .btn:active { transform: translateY(1px) scale(0.997); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  input[type=file] { display: none; }
+
+  .preview-shell { margin-top: 14px; display: none; }
+  .preview-shell.show { display: block; }
+  .preview-img {
+    width: 100%; max-height: 340px; object-fit: contain; border-radius: 12px;
+    background: #0a0f1f; border: 1px solid var(--border);
+  }
+
+  .status { font-size: 13px; color: var(--muted); margin-top: 10px; min-height: 18px; }
+  .status.busy { color: var(--accent); }
+  .status.err { color: var(--bad); }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700;
+    padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+  }
+  .pill.gps { color: var(--good); border-color: #2e6b4c; background: rgba(110,231,168,0.08); }
+  .pill.est { color: var(--warn); border-color: #6b552e; background: rgba(255,180,84,0.08); }
+  .pill.ai  { color: var(--accent); border-color: #2e6b66; background: rgba(86,212,196,0.08); }
+
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; font-size: 14px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .feat { margin: 12px 0; }
+  .feat .label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
+  .feat .label .name { color: var(--text); }
+  .feat .label .val { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bar { height: 9px; background: #0c1226; border-radius: 999px; overflow: hidden; border: 1px solid var(--border); }
+  .bar > span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent-2), var(--accent)); transition: width .4s ease; }
+  .swatch { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--border); display: inline-block; vertical-align: -3px; }
+
+  .est-row { display: flex; align-items: center; gap: 10px; margin: 9px 0; }
+  .est-row .rank { width: 22px; color: var(--muted); font-weight: 800; font-size: 13px; }
+  .est-row .name { flex: 0 0 42%; font-size: 14px; }
+  .est-row .bar { flex: 1; }
+  .est-row .pct { width: 46px; text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .notice {
+    font-size: 12.5px; color: var(--warn); background: rgba(255,180,84,0.07);
+    border: 1px solid #5e4a22; border-radius: 10px; padding: 10px 12px; margin-top: 10px;
+  }
+  .reasoning { font-size: 13.5px; color: var(--text); }
+  .reasoning li { margin: 5px 0; color: var(--muted); }
+  .reasoning li b { color: var(--text); }
+
+  #map { width: 100%; height: 300px; border-radius: 12px; border: 1px solid var(--border); background: #0a0f1f; }
+  .map-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 24px 0; }
+
+  input[type=text], input[type=url] {
+    width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border);
+    background: #0c1226; color: var(--text); font-size: 14px;
+  }
+  input::placeholder { color: #5a648a; }
+  label.field-label { display: block; font-size: 13px; color: var(--muted); margin: 4px 0 6px; }
+  .small { font-size: 12px; color: var(--muted); }
+
+  .hist-item {
+    display: flex; gap: 12px; align-items: center; padding: 10px; border: 1px solid var(--border);
+    border-radius: 12px; margin: 8px 0; background: #0e1429;
+  }
+  .hist-item img { width: 54px; height: 54px; object-fit: cover; border-radius: 9px; flex: 0 0 auto; background:#0a0f1f; }
+  .hist-item .meta { flex: 1; min-width: 0; }
+  .hist-item .meta .title { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hist-item .meta .sub { font-size: 12px; color: var(--muted); }
+  .hist-item .del { color: var(--bad); background: none; border: none; font-size: 20px; cursor: pointer; padding: 4px 8px; }
+
+  .row-between { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .toggle-link { color: var(--accent-2); font-size: 13px; cursor: pointer; text-decoration: none; }
+  .hidden { display: none !important; }
+  footer.app { text-align: center; color: var(--muted); font-size: 12px; margin-top: 24px; }
+  a { color: var(--accent-2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="app">
+    <div class="logo">Geo<span class="dot">Vision</span></div>
+    <div class="tag">Standortschätzung aus Fotos · ehrlich über das, was geht</div>
+  </header>
+
+  <!-- ======================= UPLOAD ======================= -->
+  <section class="card">
+    <h2>Foto wählen</h2>
+    <div class="btn-row">
+      <button class="btn" id="btnCamera">📷 Kamera</button>
+      <button class="btn secondary" id="btnGallery">🖼️ Galerie</button>
+    </div>
+    <input type="file" id="fileCamera" accept="image/*" capture="environment" />
+    <input type="file" id="fileGallery" accept="image/*" />
+
+    <div class="preview-shell" id="previewShell">
+      <img class="preview-img" id="previewImg" alt="Vorschau" />
+    </div>
+    <div class="status" id="status"></div>
+  </section>
+
+  <!-- ======================= 1 · GPS / EXIF ======================= -->
+  <section class="card" id="cardGps">
+    <h2><span class="num">1</span> GPS aus Foto-Metadaten (EXIF)</h2>
+    <div id="gpsBody">
+      <p class="small">Noch kein Foto analysiert. EXIF-GPS ist die <b>zuverlässigste</b> Quelle — exakter Ort, kein Raten. Viele Fotos (Screenshots, Messenger, Social Media) haben diese Daten aber entfernt.</p>
+    </div>
+  </section>
+
+  <!-- ======================= 2 · BILDMERKMALE ======================= -->
+  <section class="card" id="cardFeatures">
+    <h2><span class="num">2</span> Gemessene Bildmerkmale</h2>
+    <p class="small">Direkt aus den Pixeln berechnet — keine erfundenen Werte.</p>
+    <div id="featuresBody"><p class="small" style="margin-top:12px">Noch keine Messung.</p></div>
+  </section>
+
+  <!-- ======================= 3 · REGIONSTYP-SCHÄTZUNG ======================= -->
+  <section class="card" id="cardEstimate">
+    <h2><span class="num">3</span> Regionstyp-Schätzung (ohne GPS)</h2>
+    <div class="notice">
+      ⚠️ Grobe Tendenz, <b>kein Stadt- oder Land-Treffer.</b> Diese Schätzung beruht nur auf Farb-/Strukturmerkmalen und ist regelbasiert. Die Konfidenz ist bewusst niedrig gedeckelt.
+    </div>
+    <div id="estimateBody"><p class="small" style="margin-top:12px">Noch keine Schätzung.</p></div>
+  </section>
+
+  <!-- ======================= BEGRÜNDUNG ======================= -->
+  <section class="card" id="cardReason">
+    <h2>Begründung</h2>
+    <div id="reasonBody" class="reasoning"><p class="small">Welche Merkmale zu welcher Einschätzung führen, erscheint hier nach der Analyse.</p></div>
+  </section>
+
+  <!-- ======================= KARTE ======================= -->
+  <section class="card">
+    <h2>Karte</h2>
+    <div id="mapWrap"><div class="map-empty" id="mapEmpty">Karte erscheint, sobald ein Foto GPS-Daten enthält.</div><div id="map" class="hidden"></div></div>
+  </section>
+
+  <!-- ======================= 4 · KI-SERVER (optional) ======================= -->
+  <section class="card">
+    <div class="row-between">
+      <h2 style="margin:0"><span class="num">4</span> KI-Server (optional)</h2>
+      <a class="toggle-link" id="aiToggle">Einstellungen</a>
+    </div>
+    <div id="aiPanel" class="hidden" style="margin-top:12px">
+      <label class="field-label" for="aiUrl">Server-URL (StreetCLIP-Backend, eigenes HF-Space)</label>
+      <input type="url" id="aiUrl" placeholder="https://dein-space.hf.space/predict" />
+      <p class="small" style="margin-top:8px">
+        Optional. Liefert echte Land-/Stadt-Schätzung. Der Server wird <b>separat</b> deployt
+        (noch nicht enthalten). Erwartetes Protokoll: <code>POST</code> mit <code>multipart/form-data</code>,
+        Feld <code>file</code> = Bild → JSON <code>{ "predictions": [ {"label":"…","score":0.0–1.0}, … ] }</code>.
+      </p>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn secondary" id="btnAi" disabled>An KI-Server senden</button>
+      </div>
+      <div class="status" id="aiStatus"></div>
+      <div id="aiResult"></div>
+    </div>
+  </section>
+
+  <!-- ======================= HISTORIE ======================= -->
+  <section class="card">
+    <div class="row-between">
+      <h2 style="margin:0">Suchhistorie</h2>
+      <div style="display:flex; gap:8px">
+        <button class="btn ghost" id="btnExport" style="flex:0; min-width:auto; padding:8px 12px; font-size:13px">⬇️ CSV</button>
+        <button class="btn ghost" id="btnClearHist" style="flex:0; min-width:auto; padding:8px 12px; font-size:13px">🗑️ Leeren</button>
+      </div>
+    </div>
+    <p class="small" style="margin-top:6px">Lokal gespeichert (überlebt Neustarts). Bilder werden als kleine Vorschau gespeichert.</p>
+    <div id="histBody"><p class="small" style="margin-top:10px">Noch keine Einträge.</p></div>
+  </section>
+
+  <footer class="app">
+    GeoVision · Keine Personenidentifikation · Kennzeichen nur als Format/Farbe, keine OCR konkreter Nummern.<br/>
+    Karte © OpenStreetMap-Mitwirkende · Geocoding: Nominatim
+  </footer>
+</div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<!-- exifr: robustes EXIF/GPS-Parsing -->
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   GeoVision — Single-File PWA
+   Aufbau:
+     1. EXIF/GPS-Extraktion (zuverlässig, wenn vorhanden)
+     2. Pixel-Merkmale aus Canvas (echte Messungen)
+     3. Regelbasierte Regionstyp-Schätzung (grobe Tendenz, gedeckelte Konfidenz)
+     4. Optionaler KI-Server-Aufruf (StreetCLIP)
+   Persistenz: localStorage. Karte: Leaflet + OSM. Geocoding: Nominatim.
+   ========================================================================= */
+
+const $ = (id) => document.getElementById(id);
+const LS_HISTORY = "geovision.history.v1";
+const LS_AIURL  = "geovision.aiurl.v1";
+const CONFIDENCE_CAP = 0.35; // harte Obergrenze für die regelbasierte Schätzung
+
+let map = null, markerLayer = null;
+let lastAnalysis = null;     // letztes Analyseergebnis (für KI/Historie)
+let lastBlob = null;         // letztes Bild als Blob (für KI-Upload)
+let lastNominatimAt = 0;     // Rate-Limit-Zeitstempel
+
+/* ---------------------------- Utilities ---------------------------- */
+function setStatus(el, msg, cls) {
+  el.className = "status" + (cls ? " " + cls : "");
+  el.textContent = msg || "";
+}
+function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+function pct(x) { return Math.round(x * 100); }
+function rgbToCss(r, g, b) { return `rgb(${r|0},${g|0},${b|0})`; }
+
+/* ---------------------------- Datei-Eingabe ---------------------------- */
+$("btnCamera").addEventListener("click", () => $("fileCamera").click());
+$("btnGallery").addEventListener("click", () => $("fileGallery").click());
+$("fileCamera").addEventListener("change", (e) => handleFile(e.target.files[0]));
+$("fileGallery").addEventListener("change", (e) => handleFile(e.target.files[0]));
+
+async function handleFile(file) {
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    setStatus($("status"), "Bitte eine Bilddatei wählen.", "err");
+    return;
+  }
+  lastBlob = file;
+  setStatus($("status"), "Analysiere …", "busy");
+
+  // Vorschau
+  const url = URL.createObjectURL(file);
+  $("previewImg").src = url;
+  $("previewShell").classList.add("show");
+
+  try {
+    // Bild für Pixel-Analyse laden
+    const img = await loadImage(url);
+
+    // 1) EXIF/GPS
+    const gps = await extractGps(file);
+
+    // 2) Pixel-Merkmale
+    const features = computeFeatures(img);
+
+    // 3) Regionstyp-Schätzung
+    const estimate = estimateRegion(features);
+
+    // Begründung
+    const reasoning = buildReasoning(features, estimate, gps);
+
+    lastAnalysis = { gps, features, estimate, reasoning, when: Date.now() };
+
+    renderGps(gps);
+    renderFeatures(features);
+    renderEstimate(estimate);
+    renderReasoning(reasoning);
+
+    // KI-Button freischalten, falls URL gesetzt
+    $("btnAi").disabled = !($("aiUrl").value.trim());
+
+    // Karte + Geocoding nur bei echtem GPS
+    if (gps.hasGps) {
+      showOnMap(gps.lat, gps.lon, "EXIF-GPS");
+      reverseGeocode(gps.lat, gps.lon); // füllt Ortsnamen asynchron nach
+    } else {
+      hideMap();
+    }
+
+    // Historie + Thumbnail
+    const thumb = makeThumbnail(img);
+    saveHistory(buildHistoryRecord(thumb));
+
+    setStatus($("status"), gps.hasGps
+      ? "Fertig — exakter GPS-Standort gefunden."
+      : "Fertig — kein GPS im Foto. Es folgt nur die grobe Regionstyp-Schätzung.", "");
+  } catch (err) {
+    console.error(err);
+    setStatus($("status"), "Fehler bei der Analyse: " + err.message, "err");
+  }
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Bild konnte nicht geladen werden"));
+    img.src = url;
+  });
+}
+
+/* ============================================================
+   1) EXIF / GPS
+   ============================================================ */
+async function extractGps(file) {
+  const out = { hasGps: false, lat: null, lon: null, altitude: null,
+                timestamp: null, make: null, model: null, place: null };
+  try {
+    if (typeof exifr === "undefined") return out;
+    const gps = await exifr.gps(file);
+    if (gps && typeof gps.latitude === "number" && typeof gps.longitude === "number") {
+      out.hasGps = true;
+      out.lat = gps.latitude;
+      out.lon = gps.longitude;
+    }
+    // Zusätzliche Metadaten (nicht-personenbezogen)
+    const meta = await exifr.parse(file, { pick: ["GPSAltitude", "DateTimeOriginal", "Make", "Model"] });
+    if (meta) {
+      if (typeof meta.GPSAltitude === "number") out.altitude = meta.GPSAltitude;
+      if (meta.DateTimeOriginal) out.timestamp = meta.DateTimeOriginal;
+      if (meta.Make) out.make = String(meta.Make).trim();
+      if (meta.Model) out.model = String(meta.Model).trim();
+    }
+  } catch (e) {
+    console.warn("EXIF-Parsing:", e);
+  }
+  return out;
+}
+
+function renderGps(gps) {
+  const body = $("gpsBody");
+  if (!gps.hasGps) {
+    body.innerHTML = `
+      <span class="pill est">Kein GPS gefunden</span>
+      <p class="small" style="margin-top:10px">Dieses Foto enthält keine GPS-Koordinaten in den Metadaten.
+      Das ist normal bei Screenshots, heruntergeladenen oder über Messenger geteilten Bildern —
+      dort werden die Standortdaten meist entfernt. Eine exakte Ortsbestimmung ist hier <b>nicht</b> möglich.</p>`;
+    return;
+  }
+  const rows = [
+    ["Breitengrad", gps.lat.toFixed(6) + "°"],
+    ["Längengrad", gps.lon.toFixed(6) + "°"],
+  ];
+  if (gps.altitude != null) rows.push(["Höhe", gps.altitude.toFixed(0) + " m"]);
+  if (gps.timestamp) rows.push(["Aufgenommen", new Date(gps.timestamp).toLocaleString("de-DE")]);
+  if (gps.make || gps.model) rows.push(["Kamera", [gps.make, gps.model].filter(Boolean).join(" ")]);
+
+  body.innerHTML = `
+    <span class="pill gps">✓ Exakter Standort aus EXIF</span>
+    <div class="kv" style="margin-top:12px" id="gpsKv">
+      ${rows.map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join("")}
+    </div>
+    <div class="kv" style="margin-top:8px"><div class="k">Ort</div><div class="v" id="gpsPlace">wird geladen …</div></div>`;
+}
+
+/* ============================================================
+   Reverse Geocoding (Nominatim, rate-limited 1/s)
+   ============================================================ */
+async function reverseGeocode(lat, lon) {
+  const placeEl = $("gpsPlace");
+  try {
+    const wait = 1000 - (Date.now() - lastNominatimAt);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastNominatimAt = Date.now();
+
+    const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=12&accept-language=de`;
+    const res = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const name = data.display_name || "Unbekannt";
+    if (placeEl) placeEl.textContent = name;
+    if (lastAnalysis && lastAnalysis.gps) lastAnalysis.gps.place = name;
+    // Marker-Popup aktualisieren
+    if (markerLayer) markerLayer.bindPopup(name).openPopup();
+    // Historie-Eintrag (jüngster) mit Ortsname nachziehen
+    updateLatestHistoryPlace(name);
+  } catch (e) {
+    if (placeEl) placeEl.textContent = "Ortsname nicht abrufbar (offline?)";
+  }
+}
+
+/* ============================================================
+   2) Pixel-Merkmale
+   ============================================================ */
+function computeFeatures(img) {
+  // Downscale für Performance
+  const MAX = 256;
+  const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const n = w * h;
+
+  let sumLum = 0, sumSat = 0;
+  let green = 0, snow = 0, warm = 0, blueSky = 0;
+  let skyR = 0, skyG = 0, skyB = 0, skyCount = 0;
+  const gray = new Float32Array(n);
+
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const r = data[i], g = data[i+1], b = data[i+2];
+    const lum = 0.2126*r + 0.7152*g + 0.0722*b;
+    gray[p] = lum;
+    sumLum += lum;
+
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    const sat = mx === 0 ? 0 : (mx - mn) / mx;
+    sumSat += sat;
+
+    // Vegetation: Grün dominiert
+    if (g > r + 12 && g > b + 6) green++;
+    // Schnee/Weiß: hell + entsättigt
+    if (lum > 200 && sat < 0.12) snow++;
+    // Warme Töne: Rot dominiert deutlich
+    if (r > g + 10 && r > b + 25) warm++;
+
+    // Oberes Drittel = Himmel-Region
+    const row = (p / w) | 0;
+    if (row < h / 3) {
+      skyR += r; skyG += g; skyB += b; skyCount++;
+      if (b > r + 10 && b > g) blueSky++;
+    }
+  }
+
+  // Kanten-/Strukturdichte (Sobel-Annäherung) → Proxy für Bebauung
+  let edgeSum = 0, edgeN = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = y * w + x;
+      const gx = gray[idx-1] - gray[idx+1];
+      const gy = gray[idx-w] - gray[idx+w];
+      edgeSum += Math.sqrt(gx*gx + gy*gy);
+      edgeN++;
+    }
+  }
+  const edgeDensity = clamp((edgeSum / edgeN) / 90, 0, 1); // normiert
+
+  const skyColor = skyCount ? { r: skyR/skyCount, g: skyG/skyCount, b: skyB/skyCount } : { r:0,g:0,b:0 };
+
+  return {
+    brightness: clamp((sumLum / n) / 255, 0, 1),
+    saturation: clamp(sumSat / n, 0, 1),
+    vegetation: green / n,
+    snow: snow / n,
+    warmth: warm / n,
+    blueSky: skyCount ? blueSky / skyCount : 0,
+    builtUp: edgeDensity,
+    skyColor,
+    dims: { w: img.width, h: img.height }
+  };
+}
+
+function renderFeatures(f) {
+  const bar = (name, val, extra) => `
+    <div class="feat">
+      <div class="label"><span class="name">${name}</span><span class="val">${extra || pct(val) + "%"}</span></div>
+      <div class="bar"><span style="width:${pct(val)}%"></span></div>
+    </div>`;
+
+  const sky = f.skyColor;
+  $("featuresBody").innerHTML = `
+    ${bar("Vegetation / Grünanteil", f.vegetation)}
+    ${bar("Bebauung / Strukturdichte", f.builtUp)}
+    ${bar("Helligkeit / Licht", f.brightness)}
+    ${bar("Farbsättigung", f.saturation)}
+    ${bar("Himmel (Blauanteil oben)", f.blueSky)}
+    ${bar("Schnee / Weißanteil", f.snow)}
+    ${bar("Warme Töne", f.warmth)}
+    <div class="feat">
+      <div class="label">
+        <span class="name">Himmelsfarbe (Bildoberteil)</span>
+        <span class="val"><span class="swatch" style="background:${rgbToCss(sky.r,sky.g,sky.b)}"></span> ${rgbToCss(sky.r,sky.g,sky.b)}</span>
+      </div>
+    </div>
+    <p class="small">Bildgröße: ${f.dims.w}×${f.dims.h}px</p>`;
+}
+
+/* ============================================================
+   3) Regelbasierte Regionstyp-Schätzung
+   Idee: jede Region hat Ziel-Merkmalsprofile. Wir messen die
+   Ähnlichkeit der gemessenen Merkmale zu jedem Profil, normieren
+   zu Top-5 und deckeln die Konfidenz hart (CONFIDENCE_CAP).
+   ============================================================ */
+const REGION_PROFILES = [
+  { name: "Tropisch / Regenwald",      veg: 0.55, built: 0.3,  bright: 0.55, sat: 0.6,  blue: 0.4,  snow: 0.0,  warm: 0.2 },
+  { name: "Aride Zone / Wüste",        veg: 0.05, built: 0.2,  bright: 0.75, sat: 0.35, blue: 0.5,  snow: 0.0,  warm: 0.6 },
+  { name: "Gemäßigt / Mitteleuropa",   veg: 0.35, built: 0.45, bright: 0.5,  sat: 0.35, blue: 0.45, snow: 0.05, warm: 0.25 },
+  { name: "Mediterran / Küste",        veg: 0.25, built: 0.4,  bright: 0.65, sat: 0.45, blue: 0.6,  snow: 0.0,  warm: 0.45 },
+  { name: "Polar / Schnee / Hochgebirge", veg: 0.05, built: 0.1, bright: 0.8, sat: 0.15, blue: 0.4,  snow: 0.55, warm: 0.1 },
+  { name: "Urban / Großstadt",         veg: 0.1,  built: 0.8,  bright: 0.45, sat: 0.3,  blue: 0.3,  snow: 0.02, warm: 0.3 },
+  { name: "Alpin / Gebirge (grün)",    veg: 0.4,  built: 0.25, bright: 0.55, sat: 0.4,  blue: 0.5,  snow: 0.2,  warm: 0.2 },
+];
+
+// Gewichtung der Merkmale
+const W = { veg: 1.3, built: 1.1, bright: 0.7, sat: 0.6, blue: 0.8, snow: 1.4, warm: 0.9 };
+
+function estimateRegion(f) {
+  const m = { veg: f.vegetation, built: f.builtUp, bright: f.brightness,
+              sat: f.saturation, blue: f.blueSky, snow: f.snow, warm: f.warmth };
+
+  const scored = REGION_PROFILES.map(p => {
+    let dist = 0, wsum = 0;
+    for (const k of Object.keys(W)) {
+      const d = (m[k] - p[k]);
+      dist += W[k] * d * d;
+      wsum += W[k];
+    }
+    const rmse = Math.sqrt(dist / wsum);     // 0 = perfekt, größer = schlechter
+    const sim = Math.exp(-3.0 * rmse);        // Ähnlichkeit 0..1
+    return { name: p.name, sim };
+  });
+
+  // Normieren
+  const total = scored.reduce((s, x) => s + x.sim, 0) || 1;
+  scored.forEach(x => x.share = x.sim / total);
+  scored.sort((a, b) => b.share - a.share);
+
+  // Konfidenz hart deckeln: selbst der Top-Treffer bekommt max CONFIDENCE_CAP
+  const top5 = scored.slice(0, 5).map((x, i) => ({
+    name: x.name,
+    confidence: i === 0 ? Math.min(x.share, CONFIDENCE_CAP) : x.share * CONFIDENCE_CAP / (scored[0].share || 1)
+  }));
+
+  return { top5, capped: true };
+}
+
+function renderEstimate(est) {
+  const body = $("estimateBody");
+  body.innerHTML = est.top5.map((x, i) => `
+    <div class="est-row">
+      <span class="rank">${i+1}</span>
+      <span class="name">${x.name}</span>
+      <span class="bar"><span style="width:${clamp(x.confidence/CONFIDENCE_CAP,0,1)*100}%"></span></span>
+      <span class="pct">${pct(x.confidence)}%</span>
+    </div>`).join("") +
+    `<p class="small" style="margin-top:10px">Konfidenz auf max. ${pct(CONFIDENCE_CAP)}% gedeckelt — die Balken zeigen die relative Tendenz, keinen Wahrscheinlichkeits-Treffer.</p>`;
+}
+
+/* ============================================================
+   Begründung
+   ============================================================ */
+function buildReasoning(f, est, gps) {
+  const items = [];
+  if (gps.hasGps) {
+    items.push(`<li><b>Exakter Standort</b> aus EXIF-GPS verfügbar — die Regionstyp-Schätzung ist hier nur ergänzend.</li>`);
+  } else {
+    items.push(`<li><b>Kein GPS</b> im Bild → nur grobe Tendenz möglich.</li>`);
+  }
+  const tag = (cond, txt) => { if (cond) items.push("<li>" + txt + "</li>"); };
+  tag(f.vegetation > 0.35, `Hoher <b>Grünanteil</b> (${pct(f.vegetation)}%) → spricht für vegetationsreiche/gemäßigte oder tropische Region.`);
+  tag(f.vegetation < 0.1,  `Sehr wenig <b>Vegetation</b> (${pct(f.vegetation)}%) → eher arid, urban oder Schnee.`);
+  tag(f.builtUp > 0.6,     `Hohe <b>Strukturdichte</b> (${pct(f.builtUp)}%) → viel Bebauung, deutet auf urbanes Umfeld.`);
+  tag(f.snow > 0.25,       `Hoher <b>Weiß-/Schneeanteil</b> (${pct(f.snow)}%) → polar, winterlich oder Hochgebirge.`);
+  tag(f.warmth > 0.4,      `Viele <b>warme Töne</b> (${pct(f.warmth)}%) → trockenes/sonniges Klima oder Abendlicht.`);
+  tag(f.blueSky > 0.5,     `Deutlicher <b>blauer Himmel</b> oben → klares Wetter, gute Sicht.`);
+  tag(f.brightness > 0.7,  `Sehr <b>helles</b> Bild (${pct(f.brightness)}%) → starke Sonne, Schnee oder heller Untergrund.`);
+  tag(f.brightness < 0.3,  `Eher <b>dunkles</b> Bild (${pct(f.brightness)}%) → Innenraum, Dämmerung oder bedeckt.`);
+  items.push(`<li>Wahrscheinlichste Tendenz: <b>${est.top5[0].name}</b> (relativ, niedrige Sicherheit).</li>`);
+  return items;
+}
+function renderReasoning(items) {
+  $("reasonBody").innerHTML = `<ul class="reasoning" style="padding-left:18px; margin:0">${items.join("")}</ul>`;
+}
+
+/* ============================================================
+   Karte (Leaflet)
+   ============================================================ */
+function ensureMap() {
+  if (map) return;
+  $("mapEmpty").classList.add("hidden");
+  $("map").classList.remove("hidden");
+  map = L.map("map", { zoomControl: true });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap-Mitwirkende'
+  }).addTo(map);
+}
+function showOnMap(lat, lon, label) {
+  ensureMap();
+  setTimeout(() => map.invalidateSize(), 50);
+  map.setView([lat, lon], 13);
+  if (markerLayer) markerLayer.remove();
+  markerLayer = L.marker([lat, lon]).addTo(map).bindPopup(label || "Standort").openPopup();
+}
+function hideMap() {
+  if (!map) { $("mapEmpty").classList.remove("hidden"); $("map").classList.add("hidden"); }
+}
+
+/* ============================================================
+   Historie (localStorage) + Thumbnail
+   ============================================================ */
+function makeThumbnail(img) {
+  const S = 96;
+  const scale = Math.min(1, S / Math.max(img.width, img.height));
+  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  cv.getContext("2d").drawImage(img, 0, 0, w, h);
+  return cv.toDataURL("image/jpeg", 0.6);
+}
+
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(LS_HISTORY) || "[]"); }
+  catch { return []; }
+}
+function persistHistory(arr) {
+  try { localStorage.setItem(LS_HISTORY, JSON.stringify(arr.slice(0, 50))); }
+  catch (e) { console.warn("History speichern fehlgeschlagen:", e); }
+}
+function buildHistoryRecord(thumb) {
+  const a = lastAnalysis;
+  return {
+    id: a.when,
+    when: a.when,
+    thumb,
+    hasGps: a.gps.hasGps,
+    lat: a.gps.lat, lon: a.gps.lon,
+    place: a.gps.place || null,
+    topRegion: a.estimate.top5[0].name,
+    topConfidence: a.estimate.top5[0].confidence,
+    veg: a.features.vegetation, built: a.features.builtUp, snow: a.features.snow,
+    brightness: a.features.brightness, warmth: a.features.warmth
+  };
+}
+function saveHistory(rec) {
+  const arr = loadHistory();
+  arr.unshift(rec);
+  persistHistory(arr);
+  renderHistory();
+}
+function updateLatestHistoryPlace(name) {
+  const arr = loadHistory();
+  if (arr.length && arr[0].hasGps) { arr[0].place = name; persistHistory(arr); renderHistory(); }
+}
+function deleteHistory(id) {
+  persistHistory(loadHistory().filter(r => r.id !== id));
+  renderHistory();
+}
+function renderHistory() {
+  const arr = loadHistory();
+  const body = $("histBody");
+  if (!arr.length) { body.innerHTML = `<p class="small" style="margin-top:10px">Noch keine Einträge.</p>`; return; }
+  body.innerHTML = arr.map(r => {
+    const date = new Date(r.when).toLocaleString("de-DE");
+    const loc = r.hasGps
+      ? `<span class="pill gps" style="font-size:11px">GPS</span> ${r.place || (r.lat.toFixed(4)+", "+r.lon.toFixed(4))}`
+      : `<span class="pill est" style="font-size:11px">Schätzung</span> ${r.topRegion} · ${pct(r.topConfidence)}%`;
+    return `
+      <div class="hist-item">
+        <img src="${r.thumb}" alt="" ${r.hasGps ? `data-lat="${r.lat}" data-lon="${r.lon}"` : ""} class="${r.hasGps?'hist-locate':''}" style="cursor:${r.hasGps?'pointer':'default'}" />
+        <div class="meta">
+          <div class="title">${loc}</div>
+          <div class="sub">${date}</div>
+        </div>
+        <button class="del" data-id="${r.id}" title="Löschen">×</button>
+      </div>`;
+  }).join("");
+  body.querySelectorAll(".del").forEach(b => b.addEventListener("click", () => deleteHistory(Number(b.dataset.id))));
+  body.querySelectorAll(".hist-locate").forEach(im => im.addEventListener("click", () => {
+    showOnMap(Number(im.dataset.lat), Number(im.dataset.lon));
+    $("map").scrollIntoView({ behavior: "smooth" });
+  }));
+}
+
+/* ============================================================
+   CSV-Export
+   ============================================================ */
+$("btnExport").addEventListener("click", () => {
+  const arr = loadHistory();
+  if (!arr.length) { alert("Keine Historie zum Exportieren."); return; }
+  const cols = ["datum","quelle","lat","lon","ort","regionstyp","konfidenz_prozent","vegetation","bebauung","schnee","helligkeit","waerme"];
+  const esc = (v) => {
+    if (v == null) return "";
+    const s = String(v).replace(/"/g, '""');
+    return /[",\n;]/.test(s) ? `"${s}"` : s;
+  };
+  const rows = arr.map(r => [
+    new Date(r.when).toISOString(),
+    r.hasGps ? "EXIF-GPS" : "Schätzung",
+    r.hasGps ? r.lat : "", r.hasGps ? r.lon : "",
+    r.place || "",
+    r.topRegion, pct(r.topConfidence),
+    (r.veg*100).toFixed(1), (r.built*100).toFixed(1), (r.snow*100).toFixed(1),
+    (r.brightness*100).toFixed(1), (r.warmth*100).toFixed(1)
+  ].map(esc).join(","));
+  const csv = "﻿" + cols.join(",") + "\n" + rows.join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "geovision_historie.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$("btnClearHist").addEventListener("click", () => {
+  if (confirm("Gesamte Historie löschen?")) { persistHistory([]); renderHistory(); }
+});
+
+/* ============================================================
+   4) Optionaler KI-Server (StreetCLIP)
+   ============================================================ */
+$("aiToggle").addEventListener("click", () => $("aiPanel").classList.toggle("hidden"));
+$("aiUrl").value = localStorage.getItem(LS_AIURL) || "";
+$("aiUrl").addEventListener("input", () => {
+  localStorage.setItem(LS_AIURL, $("aiUrl").value.trim());
+  $("btnAi").disabled = !($("aiUrl").value.trim() && lastBlob);
+});
+
+$("btnAi").addEventListener("click", async () => {
+  const url = $("aiUrl").value.trim();
+  if (!url || !lastBlob) return;
+  setStatus($("aiStatus"), "Sende an KI-Server …", "busy");
+  $("aiResult").innerHTML = "";
+  try {
+    const fd = new FormData();
+    fd.append("file", lastBlob, "image.jpg");
+    const res = await fetch(url, { method: "POST", body: fd });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    const preds = data.predictions || [];
+    if (!preds.length) throw new Error("Keine Vorhersagen im Antwort-JSON.");
+    setStatus($("aiStatus"), "Antwort erhalten.", "");
+    $("aiResult").innerHTML = `<span class="pill ai">KI-Schätzung (StreetCLIP)</span>` +
+      preds.slice(0, 5).map((p, i) => `
+        <div class="est-row">
+          <span class="rank">${i+1}</span>
+          <span class="name">${p.label}</span>
+          <span class="bar"><span style="width:${clamp(p.score,0,1)*100}%"></span></span>
+          <span class="pct">${pct(p.score)}%</span>
+        </div>`).join("");
+  } catch (e) {
+    setStatus($("aiStatus"), "KI-Server-Fehler: " + e.message + " — Server deployt & URL korrekt?", "err");
+  }
+});
+
+/* ============================================================
+   Init
+   ============================================================ */
+renderHistory();
+if (typeof exifr === "undefined") {
+  setStatus($("status"), "Hinweis: EXIF-Bibliothek nicht geladen (offline?). GPS-Auslesen evtl. eingeschränkt.", "err");
+}
+</script>
+</body>
+</html>
