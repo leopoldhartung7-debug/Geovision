@@ -26,7 +26,7 @@ on:
   # branch / no "Run workflow" button required). Needs the HF_TOKEN secret and
   # the HF_USERNAME variable to be set in the repo.
   push:
-    branches: ["claude/geovision-location-app-rsAvz"]
+    branches: ["main", "claude/geovision-location-app-rsAvz"]
     paths:
       - "geovision-pro/**"
       - ".github/workflows/deploy-hf-space.yml"

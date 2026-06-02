@@ -18,6 +18,7 @@ from math import asin, cos, radians, sin, sqrt
 
 from PIL import Image
 
+from ..config import get_settings
 from ..schemas import (AnalysisResult, GpsInfo, Hierarchy, LocationCandidate,
                        ReferenceMatch, SignalGroup, SignalScore)
 from . import geocode, ocr, reference
@@ -34,6 +35,31 @@ def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
     dlat, dlon = lat2 - lat1, lon2 - lon1
     h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
     return 2 * 6371.0 * asin(sqrt(h))
+
+
+def _cluster_coords(preds: list[tuple[float, float, float]],
+                    radius_km: float) -> list[tuple[float, float, float]]:
+    """Greedy confidence-weighted clustering of (lat, lon, prob) predictions.
+
+    Predictions within `radius_km` of a cluster's running centroid are merged;
+    each cluster's probability is the sum of its members and its position is the
+    probability-weighted centroid. Returns [(lat, lon, prob), ...] by prob desc.
+    This turns many noisy point guesses (incl. TTA views) into a few robust ones.
+    """
+    clusters: list[dict] = []
+    for lat, lon, p in sorted(preds, key=lambda x: x[2], reverse=True):
+        for c in clusters:
+            if _haversine_km((lat, lon), (c["lat"], c["lon"])) <= radius_km:
+                c["pts"].append((lat, lon, p))
+                tot = sum(pp for _, _, pp in c["pts"])
+                c["lat"] = sum(la * pp for la, _, pp in c["pts"]) / tot
+                c["lon"] = sum(lo * pp for _, lo, pp in c["pts"]) / tot
+                c["prob"] = tot
+                break
+        else:
+            clusters.append({"lat": lat, "lon": lon, "prob": p, "pts": [(lat, lon, p)]})
+    clusters.sort(key=lambda c: c["prob"], reverse=True)
+    return [(c["lat"], c["lon"], c["prob"]) for c in clusters]
 
 
 def _short_label(addr: dict, display: str) -> str:
@@ -183,11 +209,15 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
 
     elif geo_preds:
         # --- GeoCLIP: real coordinate prediction (GeoSpy-style) -------------
+        # Pool TTA + top-k point guesses into a few robust clusters.
         location_source = "geoclip"
+        clustered = _cluster_coords(geo_preds, get_settings().geoclip_cluster_km)[:10]
         revs = []
-        for lat, lon, _ in geo_preds:
+        for lat, lon, _ in clustered[:5]:           # reverse-geocode only the best few
             rev = await geocode.reverse(lat, lon)
             revs.append(rev or {})
+        while len(revs) < len(clustered):
+            revs.append({})
         top_addr = revs[0].get("address", {})
         sc = countries[0][0] if countries else None
         hierarchy = Hierarchy(
@@ -202,19 +232,19 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
                  "kann ungenau sein."
                  + (f" StreetCLIP-Kontext stützt: {sc}." if sc else ""),
         )
-        total = sum(p for _, _, p in geo_preds) or 1.0
-        for i, ((lat, lon, p), rev) in enumerate(zip(geo_preds, revs), start=1):
+        total = sum(p for _, _, p in clustered) or 1.0
+        for i, ((lat, lon, p), rev) in enumerate(zip(clustered, revs), start=1):
             addr = rev.get("address", {})
             label = _short_label(addr, rev.get("display", "")) or f"{lat:.4f}, {lon:.4f}"
             candidates.append(LocationCandidate(
                 rank=i, label=label, confidence=round(p / total, 3),
                 lat=lat, lon=lon,
-                reasoning="GeoCLIP-Koordinatenvorhersage (approx.). "
+                reasoning="GeoCLIP-Koordinatenvorhersage (TTA + Clustering). "
                           + _reasoning_from_signals(tops, hierarchy.country or "dem Land"),
             ))
-        spread = (_haversine_km((geo_preds[0][0], geo_preds[0][1]),
-                                (geo_preds[1][0], geo_preds[1][1]))
-                  if len(geo_preds) > 1 else 0.0)
+        spread = (_haversine_km((clustered[0][0], clustered[0][1]),
+                                (clustered[1][0], clustered[1][1]))
+                  if len(clustered) > 1 else 0.0)
         uncertainty = (
             f"GeoCLIP-Koordinaten. Streuung Top-1↔Top-2: ~{spread:.0f} km. "
             + ("Vorhersagen liegen nah beieinander → höhere Zuversicht. " if spread < 25
@@ -281,7 +311,7 @@ async def analyze_video(data: bytes, source_name: str = "") -> AnalysisResult:
         for fr in frames:
             for name, score in engine.zero_shot(fr, COUNTRY_NAMES, template=COUNTRY_PROMPT, top_k=5):
                 agg[name] = agg.get(name, 0.0) + score
-            preds = geo.predict(fr, top_k=1)
+            preds = geo.predict(fr, top_k=1, tta=False)  # speed: 1 view per frame
             if preds:
                 pts.append(preds[0])
         return agg, pts

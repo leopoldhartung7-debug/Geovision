@@ -26,7 +26,9 @@ class Settings(BaseSettings):
     # `geoclip` package/weights are missing, we fall back to StreetCLIP country
     # inference. This is what lifts results from "country guess" to coordinates.
     enable_geoclip: bool = True
-    geoclip_top_k: int = 5         # number of coordinate candidates to return
+    geoclip_top_k: int = 10        # coordinate candidates per view (more = finer clustering)
+    geoclip_tta: bool = True       # test-time augmentation (original + flip + center-crop)
+    geoclip_cluster_km: float = 75.0  # merge predictions within this radius into one cluster
 
     # External services
     nominatim_url: str = "https://nominatim.openstreetmap.org"

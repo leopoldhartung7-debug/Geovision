@@ -67,25 +67,16 @@ class GeoEngine:
                 )
                 self._failed = True
 
-    def predict(self, image: Image.Image, top_k: Optional[int] = None) -> list[tuple[float, float, float]]:
-        """Return [(lat, lon, prob), ...] best-first. Empty list if unavailable.
-
-        geoclip's API reads from a file path, so the image is written to a short
-        lived temp JPEG (this also normalises HEIC/PNG inputs uniformly).
-        """
-        self.load()
-        if self._model is None:
-            return []
-        top_k = top_k or settings.geoclip_top_k
+    def _predict_one(self, image: Image.Image, top_k: int) -> list[tuple[float, float, float]]:
+        """Run GeoCLIP on a single image. geoclip reads from a file path, so the
+        image is written to a short-lived temp JPEG (also normalises HEIC/PNG)."""
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         try:
             image.convert("RGB").save(tmp.name, "JPEG", quality=95)
             tmp.close()
             gps, probs = self._model.predict(tmp.name, top_k=top_k)
-            out: list[tuple[float, float, float]] = []
-            for (lat, lon), p in zip(gps.tolist(), probs.tolist()):
-                out.append((float(lat), float(lon), float(p)))
-            return out
+            return [(float(lat), float(lon), float(p))
+                    for (lat, lon), p in zip(gps.tolist(), probs.tolist())]
         except Exception as exc:
             logger.warning("GeoCLIP prediction failed: %s", exc)
             return []
@@ -94,6 +85,35 @@ class GeoEngine:
                 os.unlink(tmp.name)
             except OSError:
                 pass
+
+    def predict(self, image: Image.Image, top_k: Optional[int] = None,
+                tta: Optional[bool] = None) -> list[tuple[float, float, float]]:
+        """Return merged [(lat, lon, prob), ...] predictions. Empty if unavailable.
+
+        With test-time augmentation (tta) the model is also run on a horizontal
+        flip and a centre crop; all predictions are pooled (the caller clusters
+        them). This is more robust than a single forward pass. Pass tta=False for
+        latency-sensitive paths (e.g. per-frame video).
+        """
+        self.load()
+        if self._model is None:
+            return []
+        top_k = top_k or settings.geoclip_top_k
+        use_tta = settings.geoclip_tta if tta is None else tta
+
+        views = [image]
+        if use_tta:
+            from PIL import ImageOps
+            w, h = image.size
+            cw, ch = int(w * 0.8), int(h * 0.8)
+            left, top = (w - cw) // 2, (h - ch) // 2
+            views.append(ImageOps.mirror(image))                 # horizontal flip
+            views.append(image.crop((left, top, left + cw, top + ch)))  # centre crop
+
+        merged: list[tuple[float, float, float]] = []
+        for v in views:
+            merged.extend(self._predict_one(v, top_k))
+        return merged
 
 
 _geo: Optional[GeoEngine] = None
