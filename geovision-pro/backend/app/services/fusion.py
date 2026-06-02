@@ -24,8 +24,8 @@ from ..schemas import (AnalysisResult, GpsInfo, Hierarchy, LocationCandidate,
 from . import geocode, ocr, reference
 from .exif import extract_gps, open_image
 from .geoengine import get_geo_engine
-from .labels import (COUNTRY_PROMPT, COUNTRY_NAMES, COUNTRY_TO_CONTINENT,
-                     REGION_PROMPT, REGIONS, SIGNAL_GROUPS)
+from .labels import (COUNTRY_PROMPT, COUNTRY_NAMES, COUNTRY_TO_CODE,
+                     COUNTRY_TO_CONTINENT, REGION_PROMPT, REGIONS, SIGNAL_GROUPS)
 from .vision import get_engine
 
 
@@ -221,13 +221,34 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
         # --- GeoCLIP: real coordinate prediction (GeoSpy-style) -------------
         # Pool TTA + top-k point guesses into a few robust clusters.
         location_source = "geoclip"
-        clustered = _cluster_coords(geo_preds, get_settings().geoclip_cluster_km)[:10]
+        cfg = get_settings()
+        clustered = _cluster_coords(geo_preds, cfg.geoclip_cluster_km)[:10]
+        # Reverse-geocode the leading clusters (for labels + the cross-check below).
         revs = []
-        for lat, lon, _ in clustered[:2]:   # reverse-geocode only top-2 (Nominatim = 1 req/s)
+        for lat, lon, _ in clustered[:cfg.geoclip_rerank_k]:
             rev = await geocode.reverse(lat, lon)
             revs.append(rev or {})
         while len(revs) < len(clustered):
             revs.append({})
+
+        # --- cross-check: reweight clusters by StreetCLIP country agreement ----
+        # StreetCLIP gives a country ranking; clusters whose reverse-geocoded
+        # country matches it (by ISO code, language-independent) are boosted. This
+        # corrects GeoCLIP's occasional wrong-continent guesses without overriding
+        # a strongly-confident coordinate.
+        n = len(countries) or 1
+        sc_codes = {COUNTRY_TO_CODE.get(name): (n - idx) / n
+                    for idx, (name, _) in enumerate(countries)}
+        sc_codes.pop(None, None)
+        rescored = []
+        for (lat, lon, p), rev in zip(clustered, revs):
+            code = (rev.get("address", {}) or {}).get("country_code")
+            agree = sc_codes.get(code, 0.0)
+            rescored.append((lat, lon, p * (1.0 + cfg.geoclip_streetclip_boost * agree), rev))
+        rescored.sort(key=lambda x: x[2], reverse=True)
+        clustered = [(la, lo, s) for la, lo, s, _ in rescored]
+        revs = [r for *_, r in rescored]
+
         top_addr = revs[0].get("address", {})
         sc = countries[0][0] if countries else None
         hierarchy = Hierarchy(
@@ -249,7 +270,7 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
             candidates.append(LocationCandidate(
                 rank=i, label=label, confidence=round(p / total, 3),
                 lat=lat, lon=lon,
-                reasoning="GeoCLIP-Koordinatenvorhersage (Clustering der Top-Treffer). "
+                reasoning="GeoCLIP-Koordinaten (Clustering + StreetCLIP-Cross-Check). "
                           + _reasoning_from_signals(tops, hierarchy.country or "dem Land"),
             ))
         spread = (_haversine_km((clustered[0][0], clustered[0][1]),

@@ -35,8 +35,35 @@ COUNTRIES: list[tuple[str, str]] = [
 COUNTRY_TO_CONTINENT: dict[str, str] = {name: cont for name, cont in COUNTRIES}
 COUNTRY_NAMES: list[str] = [name for name, _ in COUNTRIES]
 
-COUNTRY_PROMPT = "a street level photo taken in {}"
-REGION_PROMPT = "a street level photo taken in {}"
+# English country name -> ISO 3166-1 alpha-2 (lowercase, matches Nominatim's
+# address.country_code). Used to cross-check GeoCLIP coordinates against the
+# StreetCLIP country ranking regardless of the reverse-geocoder's language.
+COUNTRY_TO_CODE: dict[str, str] = {
+    "Germany": "de", "France": "fr", "Italy": "it", "Spain": "es", "Portugal": "pt",
+    "United Kingdom": "gb", "Ireland": "ie", "Netherlands": "nl", "Belgium": "be",
+    "Switzerland": "ch", "Austria": "at", "Poland": "pl", "Czechia": "cz",
+    "Slovakia": "sk", "Hungary": "hu", "Romania": "ro", "Bulgaria": "bg",
+    "Greece": "gr", "Croatia": "hr", "Slovenia": "si", "Serbia": "rs", "Norway": "no",
+    "Sweden": "se", "Finland": "fi", "Denmark": "dk", "Iceland": "is", "Estonia": "ee",
+    "Latvia": "lv", "Lithuania": "lt", "Ukraine": "ua", "Russia": "ru", "Turkey": "tr",
+    "United States": "us", "Canada": "ca", "Mexico": "mx", "Guatemala": "gt",
+    "Cuba": "cu", "Costa Rica": "cr", "Brazil": "br", "Argentina": "ar", "Chile": "cl",
+    "Peru": "pe", "Colombia": "co", "Bolivia": "bo", "Ecuador": "ec", "Uruguay": "uy",
+    "China": "cn", "Japan": "jp", "South Korea": "kr", "India": "in", "Thailand": "th",
+    "Vietnam": "vn", "Indonesia": "id", "Malaysia": "my", "Philippines": "ph",
+    "Singapore": "sg", "Taiwan": "tw", "Cambodia": "kh", "Nepal": "np",
+    "Sri Lanka": "lk", "Pakistan": "pk", "Bangladesh": "bd", "Israel": "il",
+    "Jordan": "jo", "United Arab Emirates": "ae", "Saudi Arabia": "sa", "Iran": "ir",
+    "Kazakhstan": "kz", "Egypt": "eg", "Morocco": "ma", "Tunisia": "tn",
+    "Algeria": "dz", "South Africa": "za", "Kenya": "ke", "Tanzania": "tz",
+    "Nigeria": "ng", "Ghana": "gh", "Ethiopia": "et", "Namibia": "na",
+    "Botswana": "bw", "Australia": "au", "New Zealand": "nz", "Fiji": "fj",
+}
+
+# StreetCLIP was pretrained on captions phrased like "<...> Street View photo in
+# <place>", so matching that phrasing improves its country/region accuracy.
+COUNTRY_PROMPT = "a Street View photo in {}"
+REGION_PROMPT = "a Street View photo in {}"
 
 # Optional region prompts for a few large countries. Used only to refine the
 # "Region" level when the location is pure inference. Still inference (not exact).

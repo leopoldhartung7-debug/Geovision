@@ -58,7 +58,7 @@ export default function App() {
           <div className="font-extrabold text-xl flex items-baseline gap-2">
             Geo<span className="text-accent">Vision</span> Pro
             <span className="text-[10px] font-semibold text-accent border border-accent/40 rounded px-1.5 py-0.5">
-              v1.1 · schnell
+              v1.2 · genauer
             </span>
           </div>
           <div className="text-xs text-muted hidden sm:block">
