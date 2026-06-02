@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+html, body, #root {
+  height: 100%;
+}
+body {
+  @apply bg-ink text-slate-100 font-sans antialiased;
+}
+
+.card {
+  @apply bg-panel border border-edge rounded-2xl p-4 shadow-xl;
+}
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 font-semibold transition active:translate-y-px disabled:opacity-50 disabled:cursor-not-allowed;
+}
+.btn-accent { @apply bg-accent text-ink hover:brightness-95; }
+.btn-blue   { @apply bg-accent2 text-white hover:brightness-95; }
+.btn-ghost  { @apply border border-edge text-slate-200 hover:bg-panel2; }
+.bar { @apply h-2 rounded-full bg-[#0c1226] overflow-hidden border border-edge; }
+.bar > span { @apply block h-full rounded-full; background: linear-gradient(90deg, #6c8cff, #56d4c4); }
+
+/* Leaflet tiles look better on dark */
+.leaflet-container { background: #0a0f1f; }

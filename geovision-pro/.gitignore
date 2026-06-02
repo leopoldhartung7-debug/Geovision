@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+*.db
+
+# Node / frontend
+node_modules/
+dist/
+*.local
+
+# Model weights cache
+models/
+backend/models/
+
+# OS
+.DS_Store

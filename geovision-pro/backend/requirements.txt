@@ -1,0 +1,31 @@
+# Core API
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.18
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Database (async)
+SQLAlchemy==2.0.36
+asyncpg==0.30.0
+
+# HTTP client (geocoding)
+httpx==0.28.1
+
+# Imaging
+Pillow==11.1.0
+pillow-heif==0.21.0          # HEIC/HEIF support
+numpy==2.2.1
+
+# Vision model (CLIP / StreetCLIP)
+torch==2.5.1
+transformers==4.48.0
+
+# Video frame extraction
+opencv-python-headless==4.11.0.86
+
+# Reports
+reportlab==4.2.5
+
+# Optional OCR (also needs the `tesseract-ocr` system package + language data)
+pytesseract==0.3.13

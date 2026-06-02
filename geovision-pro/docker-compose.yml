@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: geovision
+      POSTGRES_PASSWORD: geovision
+      POSTGRES_DB: geovision
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geovision"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GEOVISION_DATABASE_URL: postgresql+asyncpg://geovision:geovision@db:5432/geovision
+      GEOVISION_VISION_MODEL: ${GEOVISION_VISION_MODEL:-geolocal/StreetCLIP}
+      GEOVISION_MODEL_LAZY_LOAD: "true"
+      GEOVISION_NOMINATIM_EMAIL: ${GEOVISION_NOMINATIM_EMAIL:-}
+      HF_HOME: /models
+    volumes:
+      - models:/models           # cache downloaded weights across restarts
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:
+  models:
