@@ -198,7 +198,9 @@
   <section class="card" id="cardEstimate">
     <h2><span class="num">3</span> Regionstyp-Schätzung (ohne GPS)</h2>
     <div class="notice">
-      ⚠️ Grobe Tendenz, <b>kein Stadt- oder Land-Treffer.</b> Diese Schätzung beruht nur auf Farb-/Strukturmerkmalen und ist regelbasiert. Die Konfidenz ist bewusst niedrig gedeckelt.
+      ⚠️ <b>Nur grobe Farb-Statistik.</b> Diese Liste kann bei Schildern, Nahaufnahmen oder ungewöhnlichen Motiven klar danebenliegen
+      (z. B. blaues Schild → „Wasser"). Für ein verlässliches Ergebnis nutze die <b>On-Device-KI</b> unten,
+      und für einen <b>echten Ort</b> das <b>„Schild lesen & Ort finden"</b> weiter unten.
     </div>
     <div id="estimateBody"><p class="small" style="margin-top:12px">Noch keine Schätzung.</p></div>
 
@@ -234,9 +236,9 @@
     </div>
 
     <div style="margin-top:14px">
-      <div style="font-weight:800; font-size:14px">📝 Text im Bild lesen (OCR)</div>
-      <p class="small">Liest sichtbare Schrift: Hotel-/Geschäftsnamen, Straßen-/Ortsschilder → direkt durchsuchbar. Keine Kfz-Kennzeichen, keine Personen.</p>
-      <div class="btn-row" style="margin-top:8px"><button class="btn secondary" id="btnOcr" disabled>Text erkennen</button></div>
+      <div style="font-weight:800; font-size:14px">🪧 Schild lesen & Ort finden</div>
+      <p class="small">Liest Schrift im Bild (Hotel-/Ortsschilder, Wegweiser) und sucht den Text automatisch als <b>echten Ort</b> → Karte, Adresse, Hotels in der Nähe. Keine Kfz-Kennzeichen, keine Personen.</p>
+      <div class="btn-row" style="margin-top:8px"><button class="btn secondary" id="btnOcr" disabled>Schild lesen & Ort finden</button></div>
       <div class="status" id="ocrStatus"></div>
       <div id="ocrResult"></div>
     </div>
@@ -254,7 +256,8 @@
   <!-- ======================= KARTE ======================= -->
   <section class="card">
     <h2>Karte</h2>
-    <div id="mapWrap"><div class="map-empty" id="mapEmpty">Karte erscheint, sobald ein Foto GPS-Daten enthält.</div><div id="map" class="hidden"></div></div>
+    <div id="mapWrap"><div class="map-empty" id="mapEmpty">Karte erscheint bei GPS im Foto oder wenn ein Ort aus einem Schild gefunden wird.</div><div id="map" class="hidden"></div></div>
+    <div id="placeInfo" class="small" style="margin-top:10px"></div>
   </section>
 
   <!-- ======================= 4 · KI-SERVER (optional) ======================= -->
@@ -521,8 +524,8 @@ async function reverseGeocode(lat, lon) {
    Orte in der Nähe (Overpass / OpenStreetMap) — benennt Hotels,
    Gebäude, Geschäfte an den GPS-Koordinaten. Nur bei echtem GPS.
    ============================================================ */
-async function fetchNearbyPlaces(lat, lon) {
-  const box = $("nearbyBox");
+async function fetchNearbyPlaces(lat, lon, box) {
+  box = box || $("nearbyBox");
   if (!box) return;
   try {
     const q = `[out:json][timeout:20];(nwr(around:150,${lat},${lon})[name];);out center tags 60;`;
@@ -625,8 +628,9 @@ function computeFeatures(img) {
 
       if (y >= lowerStart) {
         lowerCount++;
-        // Wasser: blau/türkis, in unterer Bildhälfte, relativ glatt (geringe Textur)
-        if (b > r + 6 && b >= g - 10 && b > 70 && sat > 0.06 && sat < 0.9 && grad < 24) water++;
+        // Wasser: bläulich-türkis (Grün nahe Blau), mittlere Sättigung, hell genug, sehr glatt.
+        // Strenger als zuvor, damit blaue Schilder/Flächen nicht als Wasser zählen.
+        if (b > r + 10 && g >= r && b >= g - 4 && b < g + 55 && lum > 55 && sat > 0.10 && sat < 0.55 && grad < 16) water++;
         if (g > r + 12 && g > b + 6) greenLower++;
       }
       if (y >= bottomStart) {
@@ -984,6 +988,67 @@ async function runClip() {
    Für Hotel-/Geschäftsnamen, Schilder. Keine Kfz-Nummern/Personen.
    ============================================================ */
 $("btnOcr").addEventListener("click", runOcr);
+
+// Bild für OCR aufbereiten: hochskalieren (kleine Schrift), Graustufen + Kontrast.
+async function ocrPreprocessedURL() {
+  const img = await loadImage(URL.createObjectURL(lastBlob));
+  const longSide = Math.max(img.width, img.height);
+  const scale = Math.min(2.5, Math.max(1, 1600 / longSide));
+  const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+  const im = ctx.getImageData(0, 0, w, h), d = im.data;
+  for (let i = 0; i < d.length; i += 4) {
+    let l = 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
+    l = clamp((l - 128) * 1.45 + 128, 0, 255); // Kontrast anheben
+    d[i] = d[i+1] = d[i+2] = l;
+  }
+  ctx.putImageData(im, 0, 0);
+  return cv.toDataURL("image/png");
+}
+
+// Erkannten Text als echten Ort suchen (Nominatim-Suche, rate-limited).
+async function geocodeText(text) {
+  const lines = text.split(/\n+/)
+    .map(s => s.replace(/[^\p{L}\p{N}\s\-.,&]/gu, " ").replace(/\s+/g, " ").trim())
+    .filter(s => s.length >= 3 && /\p{L}{3,}/u.test(s));
+  if (!lines.length) return [];
+  const queries = [];
+  queries.push(lines.slice(0, 4).join(", "));
+  for (const l of lines.slice(0, 5)) if (l.length >= 4) queries.push(l);
+  const uniqQ = [...new Set(queries)].slice(0, 4);
+
+  const results = [], seen = new Set();
+  for (const q of uniqQ) {
+    const wait = 1000 - (Date.now() - lastNominatimAt);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastNominatimAt = Date.now();
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=3&accept-language=de&q=${encodeURIComponent(q)}`);
+      if (!res.ok) continue;
+      const arr = await res.json();
+      for (const r of arr) {
+        const key = r.osm_type + r.osm_id;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        results.push({ display: r.display_name, lat: +r.lat, lon: +r.lon, importance: r.importance || 0 });
+      }
+    } catch (_) { /* einzelne Anfrage ignorieren */ }
+  }
+  results.sort((a, b) => b.importance - a.importance);
+  return results.slice(0, 6);
+}
+
+// Ort auf Karte zeigen + Adresse/Hotels in der Nähe laden.
+function showLocation(lat, lon, name) {
+  showOnMap(lat, lon, name);
+  const pi = $("placeInfo");
+  if (pi) { pi.innerHTML = "Hotels/Gebäude in der Nähe werden gesucht …"; fetchNearbyPlaces(lat, lon, pi); }
+  $("map").scrollIntoView({ behavior: "smooth" });
+}
+
 async function runOcr() {
   if (!lastBlob) return;
   const st = $("ocrStatus");
@@ -994,29 +1059,57 @@ async function runOcr() {
     if (typeof Tesseract === "undefined") {
       await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
     }
+    setStatus(st, "Bereite Bild auf …", "busy");
+    const url = await ocrPreprocessedURL();
     setStatus(st, "Lese Text …", "busy");
-    const { data } = await Tesseract.recognize($("previewImg").src, "deu+eng", {
+    const { data } = await Tesseract.recognize(url, "deu+eng", {
       logger: m => { if (m.status === "recognizing text") setStatus(st, `Lese Text … ${Math.round((m.progress || 0) * 100)}%`, "busy"); }
     });
     const text = (data.text || "").trim();
-    if (!text) { setStatus(st, "Kein lesbarer Text gefunden.", ""); return; }
+    if (!text) {
+      setStatus(st, "Kein lesbarer Text gefunden. Tipp: Schild groß, scharf und gerade fotografieren.", "");
+      return;
+    }
+    if (lastAnalysis) lastAnalysis.ocr = text;
+
+    setStatus(st, "Suche Ort aus dem Schildtext …", "busy");
+    const places = await geocodeText(text);
+
     const lines = text.split(/\n+/).map(s => s.trim()).filter(s => s.length >= 3);
     const query = encodeURIComponent(lines.slice(0, 3).join(" "));
-    setStatus(st, "Fertig.", "");
-    $("ocrResult").innerHTML = `
-      <div style="margin-top:8px">
-        <div style="font-weight:700">Erkannter Text:</div>
-        <pre style="white-space:pre-wrap; background:#0c1226; border:1px solid var(--border); border-radius:10px; padding:10px; font-size:13px; color:var(--text); margin-top:6px">${htmlEsc(text)}</pre>
-        <div class="btn-row" style="margin-top:8px">
-          <a class="btn ghost" href="https://www.google.com/search?q=${query}" target="_blank" rel="noopener">🔍 Text googeln</a>
-          <a class="btn ghost" href="https://www.google.com/maps/search/?api=1&query=${query}" target="_blank" rel="noopener">🗺️ In Maps suchen</a>
-        </div>
-        <p class="small" style="margin-top:6px">Tipp: Hotel-/Geschäftsname + „In Maps suchen" führt oft direkt zum Ort.</p>
-      </div>`;
-    if (lastAnalysis) lastAnalysis.ocr = text;
+
+    let html = `<div style="margin-top:8px"><div style="font-weight:700">Erkannter Text:</div>
+      <pre style="white-space:pre-wrap; background:#0c1226; border:1px solid var(--border); border-radius:10px; padding:10px; font-size:13px; color:var(--text); margin-top:6px">${htmlEsc(text)}</pre>`;
+
+    if (places.length) {
+      html += `<div style="font-weight:700; margin-top:10px">📍 Gefundene Orte (aus dem Text):</div>` +
+        places.map(p => `
+          <div class="hist-item geo-hit" style="cursor:pointer" data-lat="${p.lat}" data-lon="${p.lon}" data-name="${htmlEsc(p.display)}">
+            <div class="meta">
+              <div class="title">📍 ${htmlEsc(p.display.split(",").slice(0, 2).join(", "))}</div>
+              <div class="sub">${htmlEsc(p.display)}</div>
+            </div>
+            <button class="btn ghost" style="flex:0; min-width:auto; padding:8px 12px; font-size:13px">Karte</button>
+          </div>`).join("") +
+        `<p class="small" style="margin-top:6px">Tippe einen Treffer an → Karte, Adresse und Hotels in der Nähe. Sortiert nach Relevanz (OpenStreetMap).</p>`;
+    } else {
+      html += `<p class="small" style="margin-top:8px">Kein eindeutiger Ort aus dem Text gefunden. Manuelle Suche:</p>
+        <div class="btn-row" style="margin-top:6px">
+          <a class="btn ghost" href="https://www.google.com/search?q=${query}" target="_blank" rel="noopener">🔍 Googeln</a>
+          <a class="btn ghost" href="https://www.google.com/maps/search/?api=1&query=${query}" target="_blank" rel="noopener">🗺️ Maps</a>
+        </div>`;
+    }
+    html += `</div>`;
+    $("ocrResult").innerHTML = html;
+
+    $("ocrResult").querySelectorAll(".geo-hit").forEach(el => {
+      el.addEventListener("click", () => showLocation(+el.dataset.lat, +el.dataset.lon, el.dataset.name.split(",").slice(0, 2).join(", ")));
+    });
+
+    setStatus(st, places.length ? `Fertig — ${places.length} Ort(e) gefunden.` : "Fertig.", "");
   } catch (e) {
     console.error(e);
-    setStatus(st, "OCR fehlgeschlagen: " + e.message, "err");
+    setStatus(st, "OCR/Standortsuche fehlgeschlagen: " + e.message, "err");
   } finally {
     $("btnOcr").disabled = false;
   }
