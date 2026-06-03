@@ -44,3 +44,26 @@ export function reportUrl(id: number, fmt: "pdf" | "csv" | "json"): string {
 export async function getStatus(): Promise<Record<string, unknown>> {
   return handle(await fetch(`${BASE}/status`));
 }
+
+export interface ReferenceEntry { name: string; lat: number | null; lon: number | null; }
+export interface ReferenceList {
+  reference_images: number;
+  reference_geolocated: number;
+  entries: ReferenceEntry[];
+}
+
+export async function listReference(): Promise<ReferenceList> {
+  return handle(await fetch(`${BASE}/reference/list`));
+}
+
+export async function addReference(
+  file: File,
+  opts: { place?: string; lat?: number; lon?: number },
+): Promise<Record<string, unknown>> {
+  const fd = new FormData();
+  fd.append("file", file);
+  if (opts.place) fd.append("place", opts.place);
+  if (opts.lat !== undefined && !Number.isNaN(opts.lat)) fd.append("lat", String(opts.lat));
+  if (opts.lon !== undefined && !Number.isNaN(opts.lon)) fd.append("lon", String(opts.lon));
+  return handle(await fetch(`${BASE}/reference/add`, { method: "POST", body: fd }));
+}

@@ -4,6 +4,7 @@ import {
 } from "./api";
 import type { AnalysisResult, JobListItem } from "./types";
 import UploadPanel from "./components/UploadPanel";
+import ReferencePanel from "./components/ReferencePanel";
 import MapView from "./components/MapView";
 import CandidateList from "./components/CandidateList";
 import Explain from "./components/Explain";
@@ -98,6 +99,7 @@ export default function App() {
           {error && (
             <div className="card border-rose-700/50 text-rose-300 text-sm">Fehler: {error}</div>
           )}
+          <ReferencePanel />
           {result && <Explain result={result} />}
           <HistoryPanel jobs={jobs} onOpen={openJob} onDelete={removeJob} />
         </section>

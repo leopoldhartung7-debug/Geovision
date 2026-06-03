@@ -27,8 +27,10 @@ StreetCLIP-Kontext. Läuft als ein Container (FastAPI serviert die React-App + A
    Name `GEOVISION_PICARTA_API_TOKEN`, Wert = dein Token → Save.
 3. Space neu starten (*Restart*). Treffer erscheinen dann als „Picarta-API".
 
-**Eigene Referenzgalerie („Training mit mehr Bildern"):**
-Setze `GEOVISION_REFERENCE_DIR` auf einen Ordner mit deinen geotaggten Fotos
-(EXIF-GPS oder Dateiname `name_LAT_LON.jpg`). Je mehr Fotos einer Region, desto
-genauer wird die App dort. Status & Anzahl siehst du unter `/api/status`;
-nach dem Hinzufügen neuer Bilder: `POST /api/reference/reload`.
+**Eigene Galerie („Training mit mehr Bildern"):**
+Im Panel **„Eigene Galerie"** in der App ein geotaggtes Foto hochladen und Ort
+angeben (Ortsname, Koordinaten oder per Foto-GPS) — die App erkennt diese Orte
+danach genauer. Je mehr Fotos, desto besser.
+> ⚠️ Auf einem kostenlosen Space ohne *persistent storage* gehen die Galerie-
+> Fotos beim Neustart/Rebuild verloren. Für dauerhaftes Speichern in den Space-
+> Settings **Persistent storage** aktivieren (legt `/data` dauerhaft an).

@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     # retrieval, the way commercial tools pinpoint places. The MORE geotagged
     # images you add, the more places it can recognise. This is the honest,
     # free version of "training with more images". Empty path disables it.
-    reference_dir: str = ""
+    # Default points at HF persistent storage (/data); if that is not writable
+    # (free tier), the service automatically falls back to a /tmp folder. Set to
+    # "" to disable the gallery entirely.
+    reference_dir: str = "/data/reference"
     reference_min_similarity: float = 0.86  # cosine threshold to trust a match as a location
     reference_use_top_k: int = 5            # nearest neighbours fused into the estimate
     enable_ocr: bool = True        # requires the `tesseract` binary on the host

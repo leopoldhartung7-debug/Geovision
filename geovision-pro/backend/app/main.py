@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import get_settings
 from .core.logging import configure_logging
 from .database import init_models
-from .routers import analyze, health, jobs, reports
+from .routers import analyze, health, jobs, reference, reports
 
 settings = get_settings()
 configure_logging(settings.debug)
@@ -38,6 +38,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(analyze.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
+app.include_router(reference.router, prefix="/api")
 
 
 # Serve the built React frontend if it was bundled into the image (single-container

@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import threading
+from uuid import uuid4
 
 import numpy as np
 
@@ -34,9 +35,39 @@ settings = get_settings()
 _IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 _CACHE_NAME = ".geovision_ref_index.npz"
 _COORD_RE = re.compile(r"(-?\d{1,2}\.\d{3,})[,_ ]+(-?\d{1,3}\.\d{3,})")
+_FALLBACK_DIR = "/tmp/geovision_reference"
 
 _index: list[dict] | None = None
+_dir_override: str | None = None
 _lock = threading.Lock()
+
+
+def active_dir() -> str:
+    """The reference folder currently in use (may be a writable fallback)."""
+    return _dir_override or settings.reference_dir
+
+
+def ensure_writable_dir() -> str:
+    """Return a writable reference folder, creating it; fall back to /tmp if the
+    configured dir (e.g. /data without persistent storage) is not writable."""
+    global _dir_override
+    target = active_dir()
+    for candidate in (target, _FALLBACK_DIR):
+        if not candidate:
+            continue
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            probe = os.path.join(candidate, ".write_test")
+            with open(probe, "w") as fh:
+                fh.write("ok")
+            os.remove(probe)
+            if candidate != target:
+                _dir_override = candidate
+                logger.warning("Reference dir %s not writable — using %s instead.", target, candidate)
+            return candidate
+        except OSError:
+            continue
+    raise RuntimeError("No writable reference directory available.")
 
 
 def coords_from_name(name: str) -> tuple[float, float] | tuple[None, None]:
@@ -109,7 +140,7 @@ def _save_cache(root: str, entries: list[dict]) -> None:
 
 
 def _build_index() -> list[dict]:
-    root = settings.reference_dir
+    root = active_dir()
     if not root or not os.path.isdir(root):
         return []
     scanned = _scan(root)
@@ -162,6 +193,38 @@ def reload() -> int:
     with _lock:
         _index = _build_index()
     return len(_index)
+
+
+def list_entries() -> list[dict]:
+    """Current gallery contents (for the UI): name + coordinates, newest last."""
+    return [{"name": e["name"], "lat": e["lat"], "lon": e["lon"]} for e in get_index()]
+
+
+def add_image(data: bytes, lat: float, lon: float, name_hint: str = "") -> dict:
+    """Add one geotagged photo to the gallery: embed it, persist it (with the
+    coordinates encoded in the filename so it survives a rebuild that re-scans
+    the folder), and append it to the live in-memory index — effective at once.
+    """
+    root = ensure_writable_dir()
+    engine = get_engine()
+    image = open_image(data)
+    vec = engine.embed_image(image)
+    # letters-only stem keeps the coordinate parser unambiguous
+    safe = re.sub(r"[^A-Za-z]+", "", name_hint)[:30] or "ref"
+    fname = f"{safe}-{uuid4().hex[:6]}_{float(lat):.5f}_{float(lon):.5f}.jpg"
+    path = os.path.join(root, fname)
+    image.convert("RGB").save(path, "JPEG", quality=92)
+
+    idx = get_index()  # build (without the new file) before appending
+    idx.append({"name": fname, "vec": vec,
+                "lat": float(lat), "lon": float(lon),
+                "mtime": os.path.getmtime(path)})
+    _save_cache(root, idx)
+    return {
+        "name": fname,
+        "reference_images": len(idx),
+        "reference_geolocated": sum(1 for e in idx if e["lat"] is not None),
+    }
 
 
 def match(image_vec: "np.ndarray", top_k: int = 5) -> list[dict]:

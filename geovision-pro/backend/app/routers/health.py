@@ -29,17 +29,6 @@ async def status() -> dict:
         "geoclip_enabled": get_geo_engine().available,
         "reference_images": len(idx),
         "reference_geolocated": geolocated,
-        "reference_dir": settings.reference_dir or None,
+        "reference_dir": reference.active_dir() or None,
         "device": settings.device,
-    }
-
-
-@router.post("/reference/reload")
-async def reference_reload() -> dict:
-    """Re-scan the reference gallery after adding/removing images (no restart)."""
-    count = reference.reload()
-    idx = reference.get_index()
-    return {
-        "reference_images": count,
-        "reference_geolocated": sum(1 for e in idx if e.get("lat") is not None),
     }
