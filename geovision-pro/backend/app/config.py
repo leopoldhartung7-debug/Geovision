@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # inference. This is what lifts results from "country guess" to coordinates.
     enable_geoclip: bool = True
     geoclip_top_k: int = 5         # number of coordinate candidates to return
+    # Accuracy boosters (no training needed, cost a bit more CPU time):
+    geoclip_tta: bool = True       # evaluate original + mirrored view, fuse the gallery probabilities
+    geoclip_candidate_pool: int = 64  # gallery entries fused before picking the top_k
+    geoclip_country_rerank: bool = True  # down-weight GeoCLIP coords whose country contradicts StreetCLIP
 
     # Picarta — commercial GeoSpy-class API. Closest thing to GeoSpy accuracy
     # (often city/street level). Optional: needs a free API token. If no token

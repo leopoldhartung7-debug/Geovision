@@ -41,7 +41,8 @@ async def forward(query: str, limit: int = 3) -> list[dict]:
     cached = geocode_cache.get(cache_key)
     if cached is not None:
         return cached
-    params = {"format": "jsonv2", "q": query, "limit": limit, "accept-language": "de"}
+    params = {"format": "jsonv2", "q": query, "limit": limit,
+              "accept-language": "de", "addressdetails": 1}
     async with httpx.AsyncClient(timeout=settings.http_timeout) as client:
         try:
             r = await _rate_limited_get(client, f"{settings.nominatim_url}/search", params)
@@ -51,7 +52,8 @@ async def forward(query: str, limit: int = 3) -> list[dict]:
             return []
     out = [
         {"display": d.get("display_name", ""), "lat": float(d["lat"]), "lon": float(d["lon"]),
-         "importance": float(d.get("importance", 0.0))}
+         "importance": float(d.get("importance", 0.0)),
+         "country_code": (d.get("address", {}) or {}).get("country_code")}
         for d in data if d.get("lat") and d.get("lon")
     ]
     geocode_cache.set(cache_key, out)

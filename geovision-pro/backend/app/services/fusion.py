@@ -261,8 +261,28 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
         for lat, lon, _ in geo_preds:
             rev = await geocode.reverse(lat, lon)
             revs.append(rev or {})
-        top_addr = revs[0].get("address", {})
         sc = countries[0][0] if countries else None
+
+        # StreetCLIP cross-check: down-weight GeoCLIP coordinates whose country
+        # contradicts StreetCLIP's country guess (catches gross "wrong country/
+        # continent" misses). Uses ISO codes so it is language-agnostic. One
+        # extra (cached) forward-geocode resolves StreetCLIP's top country code.
+        reranked = False
+        if settings.geoclip_country_rerank and sc:
+            sc_hits = await geocode.forward(sc, limit=1)
+            sc_code = (sc_hits[0].get("country_code") if sc_hits else None)
+            if sc_code:
+                scored = []
+                for (lat, lon, p), rev in zip(geo_preds, revs):
+                    code = (rev.get("address", {}) or {}).get("country_code")
+                    boost = 1.0 if code == sc_code else 0.4  # penalise disagreement
+                    scored.append((p * boost, lat, lon, p, rev))
+                scored.sort(key=lambda t: t[0], reverse=True)
+                geo_preds = [(lat, lon, p) for _, lat, lon, p, _ in scored]
+                revs = [rev for *_, rev in scored]
+                reranked = True
+
+        top_addr = revs[0].get("address", {})
         hierarchy = Hierarchy(
             continent=COUNTRY_TO_CONTINENT.get(top_addr.get("country")) if top_addr.get("country") else None,
             country=top_addr.get("country"),
@@ -270,10 +290,11 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
             city=top_addr.get("city") or top_addr.get("town") or top_addr.get("village")
                  or top_addr.get("municipality"),
             district=top_addr.get("suburb") or top_addr.get("city_district"),
-            note="Aus GeoCLIP-Koordinatenvorhersage rückwärts-geocodiert. Dies ist eine "
-                 "Modell-Schätzung der Koordinaten (kein GPS); die Stadt-/Stadtteil-Ebene "
-                 "kann ungenau sein."
-                 + (f" StreetCLIP-Kontext stützt: {sc}." if sc else ""),
+            note="Aus GeoCLIP-Koordinatenvorhersage (mit TTA-Mehrfachauswertung) "
+                 "rückwärts-geocodiert. Dies ist eine Modell-Schätzung der Koordinaten "
+                 "(kein GPS); die Stadt-/Stadtteil-Ebene kann ungenau sein."
+                 + (f" Per StreetCLIP-Ländercheck bestätigt/neu sortiert ({sc})." if reranked
+                    else (f" StreetCLIP-Kontext nennt {sc}." if sc else "")),
         )
         total = sum(p for _, _, p in geo_preds) or 1.0
         for i, ((lat, lon, p), rev) in enumerate(zip(geo_preds, revs), start=1):
@@ -292,7 +313,8 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
             f"GeoCLIP-Koordinaten. Streuung Top-1↔Top-2: ~{spread:.0f} km. "
             + ("Vorhersagen liegen nah beieinander → höhere Zuversicht. " if spread < 25
                else "Vorhersagen streuen → geringere Zuversicht. ")
-            + (f"StreetCLIP-Kontext nennt {sc}. " if sc else "")
+            + (f"Mit StreetCLIP-Ländercheck abgeglichen ({sc}). " if reranked
+               else (f"StreetCLIP-Kontext nennt {sc}. " if sc else ""))
             + "Koordinaten sind eine Modell-Schätzung, kein GPS."
         )
 

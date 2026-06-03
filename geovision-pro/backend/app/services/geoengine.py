@@ -67,33 +67,57 @@ class GeoEngine:
                 )
                 self._failed = True
 
-    def predict(self, image: Image.Image, top_k: Optional[int] = None) -> list[tuple[float, float, float]]:
-        """Return [(lat, lon, prob), ...] best-first. Empty list if unavailable.
-
-        geoclip's API reads from a file path, so the image is written to a short
-        lived temp JPEG (this also normalises HEIC/PNG inputs uniformly).
-        """
-        self.load()
-        if self._model is None:
-            return []
-        top_k = top_k or settings.geoclip_top_k
+    def _predict_one(self, image: Image.Image, top_k: int) -> list[tuple[float, float, float]]:
+        """Single forward pass. geoclip reads from a path, so we use a temp JPEG
+        (this also normalises HEIC/PNG inputs uniformly)."""
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         try:
             image.convert("RGB").save(tmp.name, "JPEG", quality=95)
             tmp.close()
             gps, probs = self._model.predict(tmp.name, top_k=top_k)
-            out: list[tuple[float, float, float]] = []
-            for (lat, lon), p in zip(gps.tolist(), probs.tolist()):
-                out.append((float(lat), float(lon), float(p)))
-            return out
-        except Exception as exc:
-            logger.warning("GeoCLIP prediction failed: %s", exc)
-            return []
+            return [(float(lat), float(lon), float(p))
+                    for (lat, lon), p in zip(gps.tolist(), probs.tolist())]
         finally:
             try:
                 os.unlink(tmp.name)
             except OSError:
                 pass
+
+    def predict(self, image: Image.Image, top_k: Optional[int] = None) -> list[tuple[float, float, float]]:
+        """Return [(lat, lon, prob), ...] best-first. Empty list if unavailable.
+
+        With TTA on (default), the image and its mirror are each scored against
+        the GeoCLIP GPS gallery and the per-coordinate probabilities are summed.
+        Because both views rank the *same* fixed gallery, this is a clean
+        ensemble that stabilises the prediction at no accuracy cost — only a bit
+        more CPU time.
+        """
+        self.load()
+        if self._model is None:
+            return []
+        top_k = top_k or settings.geoclip_top_k
+        pool = max(settings.geoclip_candidate_pool, top_k)
+
+        views = [image.convert("RGB")]
+        if settings.geoclip_tta:
+            from PIL import ImageOps
+            views.append(ImageOps.mirror(image.convert("RGB")))
+
+        try:
+            agg: dict[tuple[float, float], float] = {}
+            for view in views:
+                for lat, lon, p in self._predict_one(view, pool):
+                    key = (round(lat, 4), round(lon, 4))
+                    agg[key] = agg.get(key, 0.0) + p
+            if not agg:
+                return []
+            total = sum(agg.values()) or 1.0
+            ranked = sorted(((lat, lon, p / total) for (lat, lon), p in agg.items()),
+                            key=lambda t: t[2], reverse=True)
+            return ranked[:top_k]
+        except Exception as exc:
+            logger.warning("GeoCLIP prediction failed: %s", exc)
+            return []
 
 
 _geo: Optional[GeoEngine] = None
