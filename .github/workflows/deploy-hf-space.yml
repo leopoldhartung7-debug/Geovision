@@ -46,11 +46,10 @@ jobs:
             echo "::error::Missing HF_TOKEN secret. Add it in Settings → Secrets and variables → Actions (Secrets tab)."
             exit 1
           fi
+          # Username is optional: if neither the manual input nor the
+          # HF_USERNAME variable is set, the deploy script derives it from the
+          # token (whoami). So a valid HF_TOKEN alone is enough.
           USER_NAME="${{ inputs.hf_username }}"
           USER_NAME="${USER_NAME:-$HF_USERNAME}"
-          if [ -z "$USER_NAME" ]; then
-            echo "::error::Missing HF username. Add an HF_USERNAME variable (Variables tab) or run the workflow manually with the username input."
-            exit 1
-          fi
           chmod +x deploy_hf_space.sh
           ./deploy_hf_space.sh "$USER_NAME" "${{ inputs.space_name || 'geovision-pro' }}"

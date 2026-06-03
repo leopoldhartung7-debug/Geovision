@@ -9,10 +9,20 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-USER="${1:-${HF_USERNAME:-}}"
-[ -n "$USER" ] || { echo "Usage: HF_TOKEN=hf_xxx ./deploy_hf_space.sh <hf-username> [space-name]  (or set HF_USERNAME)"; exit 1; }
 SPACE="${2:-geovision-pro}"
 : "${HF_TOKEN:?Set HF_TOKEN env var (a Hugging Face *write* token)}"
+
+USER="${1:-${HF_USERNAME:-}}"
+# If no username was given, derive it from the token (whoami-v2). This means a
+# valid HF_TOKEN is enough to deploy — no separate HF_USERNAME needed.
+if [ -z "$USER" ]; then
+  echo "==> No username given — detecting it from the token (whoami) ..."
+  USER="$(curl -s -H "Authorization: Bearer ${HF_TOKEN}" \
+            https://huggingface.co/api/whoami-v2 \
+          | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+fi
+[ -n "$USER" ] || { echo "::error::Could not determine HF username. Is HF_TOKEN valid? You can also pass it explicitly or set HF_USERNAME."; exit 1; }
+echo "==> Deploying as Hugging Face user: ${USER}"
 REPO="${USER}/${SPACE}"
 
 echo "==> Creating Space ${REPO} (ignored if it already exists) ..."
