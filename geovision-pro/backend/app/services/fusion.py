@@ -3,13 +3,18 @@
 Decision order for the *location* (most reliable first):
   1. EXIF GPS            -> exact, location_source="exif"
   2. OCR -> geocoded     -> real place from a readable sign, location_source="ocr"
-  3. GeoCLIP             -> predicted GPS coordinates (GeoSpy-style),
+  3. Reference retrieval -> strong cosine match to YOUR geotagged gallery,
+                            location_source="reference" (grows with added images)
+  4. Picarta API         -> commercial GeoSpy-class coordinates (if a token is
+                            set), location_source="picarta"
+  5. GeoCLIP             -> predicted GPS coordinates (GeoSpy-style, open model),
                             reverse-geocoded to place names, location_source="geoclip"
-  4. CLIP/StreetCLIP     -> country/region inference, location_source="inference"
+  6. CLIP/StreetCLIP     -> country/region inference, location_source="inference"
 
-City / district from (3) and (4) are model estimates and are labelled as such in
-the hierarchy note. (1)/(2) provide exact/real places. GeoCLIP is optional: if its
-weights cannot load, the pipeline degrades to (4) automatically.
+City / district from (5) and (6) are model estimates and are labelled as such in
+the hierarchy note. (1)/(2) provide exact/real places; (3) is as good as your
+gallery; (4) is external. Every model-based source is optional and the pipeline
+degrades cleanly to the next one if it is unavailable.
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ from PIL import Image
 
 from ..schemas import (AnalysisResult, GpsInfo, Hierarchy, LocationCandidate,
                        ReferenceMatch, SignalGroup, SignalScore)
-from . import geocode, ocr, reference
+from . import geocode, ocr, picarta, reference
 from .exif import extract_gps, open_image
 from .geoengine import get_geo_engine
 from .labels import (COUNTRY_PROMPT, COUNTRY_NAMES, COUNTRY_TO_CONTINENT,
@@ -130,8 +135,12 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
             uniq.append(p)
         ocr_places = uniq[:5]
 
-    # --- reference similarity (optional) ---
+    # --- Picarta (optional external GeoSpy-class API; only if a token is set) ---
+    picarta_preds = await picarta.predict(data)
+
+    # --- reference gallery: look-alikes (display) + retrieval geolocation ---
     ref_matches = [ReferenceMatch(**m) for m in reference.match(img_vec, top_k=5)]
+    ref_geo = reference.geolocate(img_vec)  # None unless a strong geotagged match
 
     # --- decide location source + hierarchy + candidates ---
     hierarchy = Hierarchy()
@@ -180,6 +189,70 @@ async def analyze_image(data: bytes, source_name: str = "") -> AnalysisResult:
                 reasoning="Aus erkanntem Schild-/Ortstext per Geocoding gefunden.",
             ))
         uncertainty = "Mittel — abhängig davon, ob der erkannte Text wirklich der Aufnahmeort ist."
+
+    elif ref_geo:
+        # --- Reference retrieval: strong match to YOUR geotagged gallery ----
+        location_source = "reference"
+        rev = await geocode.reverse(ref_geo["lat"], ref_geo["lon"])
+        addr = (rev or {}).get("address", {})
+        sim = ref_geo["similarity"]
+        hierarchy = Hierarchy(
+            continent=COUNTRY_TO_CONTINENT.get(addr.get("country")) if addr.get("country") else None,
+            country=addr.get("country"),
+            region=addr.get("state") or addr.get("region"),
+            city=addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality"),
+            district=addr.get("suburb") or addr.get("city_district"),
+            note=f"Aus Bild-Retrieval gegen deine eigene Referenzgalerie "
+                 f"({ref_geo['n']} ähnliche Geo-Fotos, beste Ähnlichkeit {sim:.2f}). "
+                 "Genauigkeit hängt davon ab, wie nah deine Referenzbilder am Aufnahmeort liegen.",
+        )
+        for i, m in enumerate(ref_geo["matches"], start=1):
+            candidates.append(LocationCandidate(
+                rank=i,
+                label=_short_label(addr, (rev or {}).get("display", "")) if i == 1
+                      else f"{m['lat']:.4f}, {m['lon']:.4f} ({m['name']})",
+                confidence=round(min(0.99, m["similarity"]), 3),
+                lat=m["lat"], lon=m["lon"],
+                reasoning=f"Ähnlich zu Referenzbild „{m['name']}“ "
+                          f"(Kosinus-Ähnlichkeit {m['similarity']:.2f}).",
+            ))
+        uncertainty = (
+            f"Niedrig–mittel — Treffer in deiner Referenzgalerie (Ähnlichkeit {sim:.2f}). "
+            "Je näher ein Referenzfoto am echten Ort liegt, desto genauer."
+            if sim >= 0.92 else
+            f"Mittel — moderater Galerie-Treffer (Ähnlichkeit {sim:.2f}). "
+            "Mehr/nähere Referenzfotos verbessern das Ergebnis."
+        )
+
+    elif picarta_preds:
+        # --- Picarta: commercial GeoSpy-class API (token set) ---------------
+        location_source = "picarta"
+        top = picarta_preds[0]
+        rev = await geocode.reverse(top["lat"], top["lon"])
+        addr = (rev or {}).get("address", {})
+        country = top.get("country") or addr.get("country")
+        city = top.get("city") or addr.get("city") or addr.get("town") or addr.get("village")
+        hierarchy = Hierarchy(
+            continent=COUNTRY_TO_CONTINENT.get(country) if country else None,
+            country=country,
+            region=top.get("province") or addr.get("state") or addr.get("region"),
+            city=city,
+            district=addr.get("suburb") or addr.get("city_district"),
+            note="Von der Picarta-API (GeoSpy-Klasse) vorhergesagt — externe "
+                 "Bild-Geolokalisierung, oft stadt-/straßengenau. Koordinaten sind "
+                 "eine Schätzung des Anbieters, kein GPS.",
+        )
+        for i, p in enumerate(picarta_preds, start=1):
+            parts = [x for x in (p.get("city"), p.get("province"), p.get("country")) if x]
+            label = ", ".join(parts) or f"{p['lat']:.4f}, {p['lon']:.4f}"
+            candidates.append(LocationCandidate(
+                rank=i, label=label,
+                confidence=round(min(0.99, p.get("confidence", 0.0)), 3),
+                lat=p["lat"], lon=p["lon"],
+                reasoning="Picarta-API-Vorhersage (GeoSpy-Klasse).",
+            ))
+        uncertainty = ("Niedrig–mittel — Picarta-API (GeoSpy-Klasse), häufig stadt-/"
+                       "straßengenau. Externe Schätzung, kein GPS.")
 
     elif geo_preds:
         # --- GeoCLIP: real coordinate prediction (GeoSpy-style) -------------

@@ -60,7 +60,7 @@ class AnalysisResult(BaseModel):
     source_name: str = ""
 
     gps: GpsInfo = GpsInfo()
-    location_source: str = "inference"   # exif | ocr | inference
+    location_source: str = "inference"   # exif | ocr | reference | picarta | geoclip | inference
     hierarchy: Hierarchy = Hierarchy()
     candidates: list[LocationCandidate] = []
     signals: list[SignalGroup] = []

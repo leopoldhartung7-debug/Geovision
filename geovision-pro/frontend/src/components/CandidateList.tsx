@@ -3,6 +3,8 @@ import type { AnalysisResult } from "../types";
 const SOURCE_LABEL: Record<string, string> = {
   exif: "GPS-Metadaten (exakt)",
   ocr: "Schildtext (geocodiert)",
+  reference: "Referenzgalerie (Bild-Retrieval)",
+  picarta: "Picarta-API (GeoSpy-Klasse)",
   geoclip: "GeoCLIP-Koordinaten (Modell-Schätzung)",
   inference: "Bildinferenz (Land/Region)",
 };

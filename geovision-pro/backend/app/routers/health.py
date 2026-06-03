@@ -2,8 +2,8 @@
 from fastapi import APIRouter
 
 from ..config import get_settings
-from ..services import ocr
-from ..services.reference import get_index
+from ..services import ocr, picarta, reference
+from ..services.geoengine import get_geo_engine
 from ..services.vision import get_engine
 
 router = APIRouter(tags=["system"])
@@ -18,11 +18,28 @@ async def health() -> dict:
 @router.get("/status")
 async def status() -> dict:
     engine = get_engine()
+    idx = reference.get_index()
+    geolocated = sum(1 for e in idx if e.get("lat") is not None)
     return {
         "model_configured": settings.vision_model,
         "model_loaded": engine.loaded,
         "model_in_use": engine.model_name or None,
         "ocr_available": ocr.available(),
-        "reference_images": len(get_index()),
+        "picarta_enabled": picarta.available(),
+        "geoclip_enabled": get_geo_engine().available,
+        "reference_images": len(idx),
+        "reference_geolocated": geolocated,
+        "reference_dir": settings.reference_dir or None,
         "device": settings.device,
+    }
+
+
+@router.post("/reference/reload")
+async def reference_reload() -> dict:
+    """Re-scan the reference gallery after adding/removing images (no restart)."""
+    count = reference.reload()
+    idx = reference.get_index()
+    return {
+        "reference_images": count,
+        "reference_geolocated": sum(1 for e in idx if e.get("lat") is not None),
     }

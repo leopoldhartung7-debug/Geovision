@@ -28,13 +28,29 @@ class Settings(BaseSettings):
     enable_geoclip: bool = True
     geoclip_top_k: int = 5         # number of coordinate candidates to return
 
+    # Picarta — commercial GeoSpy-class API. Closest thing to GeoSpy accuracy
+    # (often city/street level). Optional: needs a free API token. If no token
+    # is set, the pipeline silently skips it and uses the open models instead.
+    # Get a token at https://picarta.ai (free tier available).
+    enable_picarta: bool = True
+    picarta_api_token: str = ""    # set GEOVISION_PICARTA_API_TOKEN to enable
+    picarta_url: str = "https://picarta.ai/classify"
+    picarta_top_k: int = 3         # number of coordinate candidates to request
+
     # External services
     nominatim_url: str = "https://nominatim.openstreetmap.org"
     nominatim_email: str = ""  # set to identify yourself per OSM usage policy
     http_timeout: float = 20.0
 
     # Optional features
-    reference_dir: str = ""        # folder of geotagged reference images for similarity; empty disables
+    # Reference gallery: a folder of YOUR OWN geotagged photos. We embed them
+    # once (cached on disk) and match new photos against them — real image
+    # retrieval, the way commercial tools pinpoint places. The MORE geotagged
+    # images you add, the more places it can recognise. This is the honest,
+    # free version of "training with more images". Empty path disables it.
+    reference_dir: str = ""
+    reference_min_similarity: float = 0.86  # cosine threshold to trust a match as a location
+    reference_use_top_k: int = 5            # nearest neighbours fused into the estimate
     enable_ocr: bool = True        # requires the `tesseract` binary on the host
     max_video_frames: int = 12     # frames sampled per video
     upload_max_mb: int = 40

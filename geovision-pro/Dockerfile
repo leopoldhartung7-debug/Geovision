@@ -38,6 +38,9 @@ ENV HF_HOME=/tmp/hf \
     GEOVISION_MODEL_LAZY_LOAD=true \
     GEOVISION_NOMINATIM_EMAIL="" \
     PORT=7860
+# Picarta (GeoSpy-class API) turns on by adding a Space *secret* named
+# GEOVISION_PICARTA_API_TOKEN (Settings → Variables and secrets) — no code
+# change; pydantic-settings reads it from the environment at startup.
 
 EXPOSE 7860
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
